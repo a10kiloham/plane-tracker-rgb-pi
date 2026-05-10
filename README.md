@@ -2,7 +2,9 @@
 
 > **Fork of [c0wsaysmoo/plane-tracker-rgb-pi](https://github.com/c0wsaysmoo/plane-tracker-rgb-pi)** with major architectural changes, incorporating recommendations from [ajplotkin's fork](https://github.com/ajplotkin/plane-tracker-rgb-pi).
 
-This fork requires a **PAID FR24 subscription API key** and is configured for an **Adafruit TRIPLE RGB Matrix Bonnet** by default. If using the older single bonnet and having display issues, update `display/__init__.py` and change "regular" back to the commented version.
+This fork can, but does not absolutely require, a paid FR24 subscription API key, as it also has fallback to adbsb.
+
+For Adafruit Triple Matrix Bonnet, be sure to set BONNET_TYPE=triple in the env variables, or otherwise 'single' for the original single bonnet.
 
 **For faster setup see:** `its-a-plane-python/setup/update-pi.sh`
 
