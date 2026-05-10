@@ -8,11 +8,12 @@
 # Or if you've already cloned manually:
 #   cd ~/plane-tracker-rgb-pi && sudo bash its-a-plane-python/setup/update-pi.sh
 #
-set -e
+set -euo pipefail
 
 REPO_DIR="$HOME/plane-tracker-rgb-pi"
 FORK_URL="https://github.com/a10kiloham/plane-tracker-rgb-pi.git"
 ENV_DEST="/etc/plane-tracker.env"
+RGB_MATRIX_DIR="$REPO_DIR/rpi-rgb-led-matrix"
 
 echo "============================================"
 echo "  Plane Tracker — Switch to forked repo"
@@ -35,7 +36,7 @@ if [ -d "$REPO_DIR/.git" ]; then
     echo "==> Pulling latest from your fork..."
     git fetch origin
     git checkout main 2>/dev/null || git checkout master
-    git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+    git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)"
 else
     echo "==> Cloning your fork to $REPO_DIR"
     git clone "$FORK_URL" "$REPO_DIR"
@@ -44,9 +45,39 @@ fi
 
 echo ""
 
+# --- Step 1b: Install Adafruit RGB Matrix helper library if not present ---
+if [ ! -d "$RGB_MATRIX_DIR" ]; then
+    echo "==> rpi-rgb-led-matrix not found in $REPO_DIR"
+    echo "==> Downloading and running Adafruit RGB Matrix installer..."
+    curl -sSL https://raw.githubusercontent.com/adafruit/Raspberry-Pi-Installer-Scripts/main/rgb-matrix.sh | bash
+    echo "   ✓ RGB Matrix helper library installed"
+else
+    echo "==> rpi-rgb-led-matrix already present, skipping installer"
+fi
+
+echo ""
+
+# --- Step 1c: Extract airline logos from logo.zip ---
+if [ -f "$REPO_DIR/logo.zip" ]; then
+    echo "==> Extracting logos from logo.zip..."
+    mkdir -p "$REPO_DIR/its-a-plane-python/logos"
+    unzip -qo "$REPO_DIR/logo.zip" -d "$REPO_DIR/its-a-plane-python/logos"
+    chmod -R a+r "$REPO_DIR/its-a-plane-python/logos"
+    echo "   ✓ Logos extracted and permissions set"
+else
+    echo "   ⚠ logo.zip not found in $REPO_DIR, skipping logo extraction"
+fi
+
+echo ""
+
 # --- Step 2: Install Python dependencies (using a virtual environment) ---
-echo "==> Ensuring python3-venv is available..."
-apt-get update -qq && apt-get install -y -qq python3-venv python3-dev 2>/dev/null || true
+echo "==> Installing system packages..."
+apt update -qq
+apt install -y -qq \
+    build-essential python3-pip python3-venv python3-dev \
+    python3-setuptools python3-wheel \
+    cython3 libgraphicsmagick++1-dev \
+    unzip git curl 2>/dev/null
 
 VENV_DIR="$REPO_DIR/.venv"
 if [ ! -d "$VENV_DIR" ]; then
@@ -57,20 +88,19 @@ else
 fi
 
 echo "==> Installing Python dependencies into venv..."
-"$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel 2>&1 | tail -3
-"$VENV_DIR/bin/pip" install -r "$REPO_DIR/requirements.txt" 2>&1 | tail -5
+"$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel 2>&1 | tail -3
+"$VENV_DIR/bin/python" -m pip install -r "$REPO_DIR/requirements.txt" 2>&1 | tail -5
 
 # Install rgbmatrix from source if the rpi-rgb-led-matrix repo exists
-RGB_MATRIX_DIR="$HOME/rpi-rgb-led-matrix"
 if [ -d "$RGB_MATRIX_DIR/bindings/python" ]; then
     echo "==> Installing rgbmatrix Python bindings into venv..."
     cd "$RGB_MATRIX_DIR/bindings/python"
-    "$VENV_DIR/bin/pip" install -e . 2>&1 | tail -3
+    "$VENV_DIR/bin/python" -m pip install -e . 2>&1 | tail -3
     cd "$REPO_DIR"
 else
-    echo "   ⚠ rgbmatrix source not found at $RGB_MATRIX_DIR"
+    echo "   ⚠ rgbmatrix bindings not found at $RGB_MATRIX_DIR/bindings/python"
     echo "     Run the Adafruit RGB Matrix installer first, or:"
-    echo "     cd ~/rpi-rgb-led-matrix/bindings/python && make && $VENV_DIR/bin/pip install ."
+    echo "     cd $RGB_MATRIX_DIR/bindings/python && $VENV_DIR/bin/pip install -e ."
 fi
 echo "   ✓ Dependencies installed"
 
@@ -81,8 +111,8 @@ if [ ! -f "$ENV_DEST" ]; then
     echo "==> Creating $ENV_DEST (you'll be prompted for your keys)"
     echo ""
 
-    read -p "  FR24 API Key (subscription_key|token): " FR24_KEY
-    read -p "  Tomorrow.io API Key: " TOMORROW_KEY
+    read -rp "  FR24 API Key (subscription_key|token): " FR24_KEY
+    read -rp "  Tomorrow.io API Key: " TOMORROW_KEY
 
     cat > "$ENV_DEST" <<EOF
 FR24_API_KEY=${FR24_KEY}
