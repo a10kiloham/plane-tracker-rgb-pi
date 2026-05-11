@@ -21,7 +21,17 @@ from config import (
 )
 
 from setup import email_alerts
-from web import map_generator, upload_helper
+
+# Lazy imports — folium (used by map_generator) may not be installed in test envs
+map_generator = None
+upload_helper = None
+
+def _ensure_map_imports():
+    global map_generator, upload_helper
+    if map_generator is None:
+        from web import map_generator as _mg, upload_helper as _uh
+        map_generator = _mg
+        upload_helper = _uh
 
 # Optional config values
 try:
@@ -38,10 +48,6 @@ except (ImportError, ModuleNotFoundError, NameError):
                     "br_y": 41.851654, "br_x": -87.573027}
     LOCATION_DEFAULT = [41.882724, -87.623350]
 
-try:
-    from config import SEARCH_RADIUS_NM
-except (ImportError, ModuleNotFoundError, NameError):
-    SEARCH_RADIUS_NM = None
 
 # Local databases for offline lookups (no API calls needed)
 try:
@@ -58,11 +64,9 @@ except ImportError:
 
 # Constants
 RETRIES = 3
-RATE_LIMIT_DELAY = 1
 MAX_FLIGHT_LOOKUP = 5
 MAX_ALTITUDE = 100000
 EARTH_RADIUS_M = 3958.8
-BLANK_FIELDS = ["", "N/A", "NONE"]
 ADSBDB_BASE = "https://api.adsbdb.com"
 
 # Helicopter types — set owner_icao to "HELI" for helicopter logo display
@@ -122,6 +126,7 @@ HOSTNAME = socket.gethostname()
 # In-memory caches for adsbdb lookups (GA aircraft owner info)
 _aircraft_cache = {}  # registration -> {data, ts}
 _CACHE_TTL = 3600     # 1 hour
+_CACHE_MAX_SIZE = 500  # Evict oldest entries beyond this
 
 
 # Utility Functions
@@ -277,6 +282,14 @@ def _airline_name_lookup(icao_code):
     return ""
 
 
+def _evict_aircraft_cache():
+    """Evict oldest entries if cache exceeds max size."""
+    if len(_aircraft_cache) > _CACHE_MAX_SIZE:
+        sorted_keys = sorted(_aircraft_cache, key=lambda k: _aircraft_cache[k]["ts"])
+        for k in sorted_keys[:len(_aircraft_cache) - _CACHE_MAX_SIZE]:
+            del _aircraft_cache[k]
+
+
 def _adsbdb_aircraft(registration):
     """Fetch aircraft owner info by registration from adsbdb (free, cached 1hr).
     Used for GA flights (N-numbers) where FR24 has no airline name."""
@@ -289,11 +302,13 @@ def _adsbdb_aircraft(registration):
         r = requests.get(url, timeout=10)
         if r.status_code == 404:
             _aircraft_cache[registration] = {"data": {}, "ts": time()}
+            _evict_aircraft_cache()
             return {}
         r.raise_for_status()
         ac = r.json().get("response", {}).get("aircraft")
         if not ac:
             _aircraft_cache[registration] = {"data": {}, "ts": time()}
+            _evict_aircraft_cache()
             return {}
         result = {
             "owner": ac.get("registered_owner", ""),
@@ -302,6 +317,7 @@ def _adsbdb_aircraft(registration):
             "registration": ac.get("registration", ""),
         }
         _aircraft_cache[registration] = {"data": result, "ts": time()}
+        _evict_aircraft_cache()
         return result
     except Exception as e:
         logger.debug(f"adsbdb aircraft error for {registration}: {e}")
@@ -369,6 +385,7 @@ def log_flight_data(entry: dict):
         safe_write_json(LOG_FILE, top_n)
 
         if notify:
+            _ensure_map_imports()
             html = map_generator.generate_closest_map(top_n, filename="closest.html")
             url = upload_helper.upload_map_to_server(html)
             subject = f"New {ordinal(rank)} Closest Flight - {entry.get('callsign','Unknown')}"
@@ -423,9 +440,11 @@ def log_farthest_flight(entry: dict):
         safe_write_json(LOG_FILE_FARTHEST, lst)
 
         if notify or updated:
+            _ensure_map_imports()
             html = map_generator.generate_farthest_map(lst, filename="farthest.html")
 
         if notify:
+            _ensure_map_imports()
             url = upload_helper.upload_map_to_server(html)
             rank = next(i for i, f in enumerate(lst) if f["_airport"] == airport) + 1
             cs = entry.get("callsign", "UNKNOWN")
@@ -572,7 +591,6 @@ class Overhead:
             for f in flights:
                 retries = RETRIES
                 while retries:
-                    sleep(RATE_LIMIT_DELAY)
                     try:
                         d = self._api.get_flight_details(f)
                         stats["details_fetched"] += 1
@@ -810,7 +828,7 @@ class Overhead:
                                     tracked_data = estimate_stale_data(self._tracked_last_data)
                             else:
                                 # ETA still in future — oceanic gap, serve estimated data
-                                self._tracked_miss_count = 0
+                                # Don't reset miss counter (preserve accumulation for post-ETA)
                                 if self._tracked_last_data:
                                     tracked_data = estimate_stale_data(self._tracked_last_data)
                         else:
@@ -841,24 +859,21 @@ class Overhead:
                 self._data = overhead_data
                 self._tracked_data = tracked_data
                 self._new_data = True
-                self._processing = False
 
         except (ConnectionError, ConnectError, TimeoutException, OSError) as e:
             logger.warning(f"Overhead: Network error during _grab: {type(e).__name__}: {e}")
-            # FIX: Set _new_data = True with empty data so the main loop doesn't
-            # spin forever in `while not o.new_data` (error handler freeze bug)
             with self._lock:
                 self._data = []
                 self._tracked_data = None
                 self._new_data = True
-                self._processing = False
         except Exception as e:
             logger.error(f"Overhead: Unexpected error in _grab: {type(e).__name__}: {e}", exc_info=True)
-            # FIX: Same — signal completion even on failure so display can proceed
             with self._lock:
                 self._data = []
                 self._tracked_data = None
                 self._new_data = True
+        finally:
+            with self._lock:
                 self._processing = False
 
     def _do_auto_wipe(self):
@@ -877,7 +892,13 @@ class Overhead:
 
     def _grab_tracked(self, flight_input, zone_flights=None):
         flight_input = flight_input.strip().upper()
-        airline_icao = flight_input[:3] if len(flight_input) >= 3 and flight_input[:3].isalpha() else None
+
+        # Convert IATA format (UA353) to ICAO (UAL353) for gRPC filter
+        if len(flight_input) >= 3 and flight_input[:2].isalpha() and flight_input[2:3].isdigit():
+            icao_prefix = IATA_TO_ICAO.get(flight_input[:2])
+            if icao_prefix:
+                flight_input = icao_prefix + flight_input[2:]
+
         match = None
 
         try:
@@ -888,29 +909,13 @@ class Overhead:
                     None,
                 )
 
-            # Strategy 1: wide bounding box search (bypasses rate limiter)
+            # Strategy 1: server-side callsign filter (searches FR24's full worldwide feed)
             if not match:
-                wide_bounds = {
-                    "tl_y": 70.0,   # North
-                    "tl_x": -130.0, # West
-                    "br_y": 10.0,   # South
-                    "br_x": 40.0,   # East
-                }
-                # Reset rate limiter so tracked search isn't blocked by zone scan
-                self._api.cache.feed_rate_limiter.reset()
-                wide_key = self._api.cache.make_feed_cache_key(wide_bounds)
-                self._api.cache._feed_cache.invalidate(wide_key)
-                flights = self._api.get_flights(bounds=wide_bounds)
-                match = next(
-                    (f for f in flights
-                     if (f.callsign or "").upper() == flight_input),
-                    None,
-                )
+                match = self._api.find_by_callsign(flight_input)
 
             if not match:
                 return None
 
-            sleep(RATE_LIMIT_DELAY)
             flight_details = self._api.get_flight_details(match)
             match.set_flight_details(flight_details)
 

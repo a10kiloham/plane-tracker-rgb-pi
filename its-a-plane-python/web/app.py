@@ -11,6 +11,9 @@ if BASE_DIR not in sys.path:
 
 from utilities.fr24_client import FR24Client
 
+# Singleton FR24Client shared across all web requests (shares cache + rate limiter)
+_fr24_client = FR24Client()
+
 # /web is the folder that this file lives in
 WEB_DIR = os.path.dirname(__file__)
 
@@ -43,31 +46,21 @@ def lookup_flight(callsign):
     Returns a dict with found=True/False and flight info if found.
     """
     callsign = callsign.strip().upper()
+
+    # Convert IATA (UA353) to ICAO (UAL353)
+    from utilities.overhead import IATA_TO_ICAO
+    if len(callsign) >= 3 and callsign[:2].isalpha() and callsign[2:3].isdigit():
+        icao_prefix = IATA_TO_ICAO.get(callsign[:2])
+        if icao_prefix:
+            callsign = icao_prefix + callsign[2:]
+
     airline_icao = callsign[:3] if len(callsign) >= 3 and callsign[:3].isalpha() else None
 
     try:
-        api = FR24Client()
-        match = None
+        api = _fr24_client
 
-        # Strategy 1: airline filter (post-filter on callsign)
-        if airline_icao:
-            try:
-                flights = api.get_flights(airline=airline_icao)
-                match = next(
-                    (f for f in flights if (f.callsign or "").upper() == callsign),
-                    None,
-                )
-            except Exception:
-                pass
-
-        # Strategy 2: global live feed search matching on callsign
-        if not match:
-            flights = api.get_flights()
-            match = next(
-                (f for f in flights
-                 if (f.callsign or "").upper() == callsign),
-                None,
-            )
+        # Server-side callsign filter (searches FR24's full worldwide feed)
+        match = api.find_by_callsign(callsign)
 
         if not match:
             return {"found": False}
@@ -162,4 +155,4 @@ def maps(filename):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    app.run(host="0.0.0.0", port=8080, debug=False)

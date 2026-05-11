@@ -3,8 +3,7 @@ Unified caching layer for API calls.
 
 Provides:
   - TTLCache: A generic thread-safe time-to-live cache.
-  - WeatherCache: Weather API wrapper with 1-hour TTL and 429 backoff.
-  - FR24Cache: FlightRadar24 cache with 90s feed TTL and 30-min flight detail TTL.
+  - FR24Cache: FlightRadar24 cache with per-key 90s feed TTL and 30-min flight detail TTL.
 """
 
 from __future__ import annotations
@@ -96,139 +95,6 @@ class TTLCache:
         return removed
 
 
-class RateLimiter:
-    """
-    Thread-safe rate limiter that enforces a minimum interval between operations.
-    Supports a backoff mode for handling 429 (rate limit) responses.
-    """
-
-    def __init__(
-        self,
-        normal_interval: float = 3600.0,
-        backoff_interval: float = 3600.0,
-    ):
-        """
-        :param normal_interval: Minimum seconds between calls in normal mode.
-        :param backoff_interval: Minimum seconds between calls in backoff mode.
-        """
-        self._normal_interval = normal_interval
-        self._backoff_interval = backoff_interval
-        self._last_call_ts: float = 0.0
-        self._in_backoff: bool = False
-        self._lock = threading.Lock()
-
-    @property
-    def in_backoff(self) -> bool:
-        with self._lock:
-            return self._in_backoff
-
-    @property
-    def last_call_ts(self) -> float:
-        with self._lock:
-            return self._last_call_ts
-
-    def is_rate_limited(self) -> bool:
-        """Return True if a call should be skipped due to rate limiting."""
-        with self._lock:
-            elapsed = time.time() - self._last_call_ts
-            interval = self._backoff_interval if self._in_backoff else self._normal_interval
-            return elapsed < interval
-
-    def time_until_next_allowed(self) -> float:
-        """Return seconds until the next call is allowed (0 if allowed now)."""
-        with self._lock:
-            elapsed = time.time() - self._last_call_ts
-            interval = self._backoff_interval if self._in_backoff else self._normal_interval
-            remaining = interval - elapsed
-            return max(0.0, remaining)
-
-    def record_call(self) -> None:
-        """Record that an API call was just made."""
-        with self._lock:
-            self._last_call_ts = time.time()
-
-    def enter_backoff(self) -> None:
-        """Enter backoff mode (e.g., after receiving HTTP 429)."""
-        with self._lock:
-            self._in_backoff = True
-        logger.warning("Rate limiter: entering backoff mode")
-
-    def exit_backoff(self) -> None:
-        """Exit backoff mode after a successful response."""
-        with self._lock:
-            if self._in_backoff:
-                self._in_backoff = False
-                logger.info("Rate limiter: backoff cleared, resuming normal interval")
-
-    def reset(self) -> None:
-        """Reset all state."""
-        with self._lock:
-            self._last_call_ts = 0.0
-            self._in_backoff = False
-
-
-class WeatherCache:
-    """
-    Cache layer for Tomorrow.io weather API.
-
-    - Caches temperature/humidity data for 1 hour.
-    - Caches forecast data for 1 hour.
-    - Rate limits API calls to 1 per hour.
-    - On 429 response, enters backoff mode (waits 1 hour before retrying).
-    """
-
-    CACHE_TTL = 3600.0  # 1 hour
-    RATE_LIMIT_INTERVAL = 3600.0  # 1 hour between calls
-    BACKOFF_INTERVAL = 3600.0  # 1 hour backoff on 429
-
-    def __init__(self):
-        self._cache = TTLCache(default_ttl=self.CACHE_TTL)
-        self._rate_limiter = RateLimiter(
-            normal_interval=self.RATE_LIMIT_INTERVAL,
-            backoff_interval=self.BACKOFF_INTERVAL,
-        )
-
-    @property
-    def rate_limiter(self) -> RateLimiter:
-        return self._rate_limiter
-
-    @property
-    def cache(self) -> TTLCache:
-        return self._cache
-
-    def get_cached_temperature(self) -> Optional[tuple]:
-        """Get cached temperature/humidity tuple or None."""
-        return self._cache.get("temperature")
-
-    def set_cached_temperature(self, value: tuple) -> None:
-        """Cache temperature/humidity tuple."""
-        self._cache.set("temperature", value)
-
-    def get_cached_forecast(self) -> Optional[list]:
-        """Get cached forecast data or None."""
-        return self._cache.get("forecast")
-
-    def set_cached_forecast(self, value: list) -> None:
-        """Cache forecast data."""
-        self._cache.set("forecast", value)
-
-    def should_call_api(self) -> bool:
-        """
-        Returns True if an API call is allowed (not rate limited).
-        """
-        return not self._rate_limiter.is_rate_limited()
-
-    def record_api_call(self) -> None:
-        """Record that an API call was made."""
-        self._rate_limiter.record_call()
-
-    def handle_429(self) -> None:
-        """Handle a 429 response — enter backoff mode."""
-        self._rate_limiter.enter_backoff()
-
-    def handle_success(self) -> None:
-        """Handle a successful response — exit backoff if needed."""
-        self._rate_limiter.exit_backoff()
 
 
 class FR24Cache:
@@ -247,10 +113,9 @@ class FR24Cache:
     def __init__(self):
         self._feed_cache = TTLCache(default_ttl=self.FEED_TTL)
         self._detail_cache = TTLCache(default_ttl=self.FLIGHT_DETAIL_TTL)
-        self._feed_rate_limiter = RateLimiter(
-            normal_interval=self.FEED_POLL_INTERVAL,
-            backoff_interval=self.FEED_POLL_INTERVAL * 2,  # Double interval on backoff
-        )
+        # Per-key rate limiting: tracks last poll time per cache key
+        self._per_key_last_poll: dict[str, float] = {}
+        self._per_key_lock = threading.Lock()
 
     @property
     def feed_cache(self) -> TTLCache:
@@ -259,10 +124,6 @@ class FR24Cache:
     @property
     def detail_cache(self) -> TTLCache:
         return self._detail_cache
-
-    @property
-    def feed_rate_limiter(self) -> RateLimiter:
-        return self._feed_rate_limiter
 
     def get_cached_flights(self, cache_key: str) -> Optional[list]:
         """
@@ -286,13 +147,22 @@ class FR24Cache:
         """Cache flight details for a specific flight."""
         self._detail_cache.set(flight_id, details)
 
-    def should_poll_feed(self) -> bool:
-        """Returns True if enough time has elapsed to poll the feed again."""
-        return not self._feed_rate_limiter.is_rate_limited()
+    def should_poll_feed(self, cache_key: str) -> bool:
+        """Returns True if enough time has elapsed to poll this specific feed key."""
+        with self._per_key_lock:
+            last = self._per_key_last_poll.get(cache_key, 0.0)
+            return (time.time() - last) >= self.FEED_POLL_INTERVAL
 
-    def record_feed_poll(self) -> None:
-        """Record that a feed poll was made."""
-        self._feed_rate_limiter.record_call()
+    def record_feed_poll(self, cache_key: str) -> None:
+        """Record that a feed poll was made for this specific key."""
+        with self._per_key_lock:
+            self._per_key_last_poll[cache_key] = time.time()
+
+    def reset_feed_key(self, cache_key: str) -> None:
+        """Reset rate limit and invalidate cache for a specific feed key."""
+        with self._per_key_lock:
+            self._per_key_last_poll.pop(cache_key, None)
+        self._feed_cache.invalidate(cache_key)
 
     def make_feed_cache_key(
         self, bounds: Optional[dict] = None, airline: Optional[str] = None
