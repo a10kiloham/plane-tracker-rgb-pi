@@ -42,3 +42,5 @@ logo2/
 #
 to-integrate/
 plane-tracker-rgb-pi.code-workspace
+rpi-rgb-led-matrix/
+its-a-plane-python/.cache/
