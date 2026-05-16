@@ -71,10 +71,11 @@ class PlaneDetailsScene(object):
         self.plane_position -= 1
 
         # Loop scroll back to start when text scrolls off
-        # (page advancing is handled by FlightDetailsScene only)
+        # Mark region as complete (display/__init__.py handles page advance)
         if self.plane_position + total_text_width < 0:
+            self.mark_scroll_complete("plane_details")
             self.plane_position = screen.WIDTH
 
     @Animator.KeyFrame.add(0)
-    def reset_scrolling(self):
+    def reset_plane_scrolling(self):
         self.plane_position = screen.WIDTH

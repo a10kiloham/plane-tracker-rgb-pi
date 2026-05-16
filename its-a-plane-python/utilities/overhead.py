@@ -186,7 +186,7 @@ def haversine(lat1, lon1, lat2, lon2):
     )
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     miles = EARTH_RADIUS_M * c
-    return miles * 1.609 if DISTANCE_UNITS == "metric" else miles
+    return miles * 1.609344 if DISTANCE_UNITS == "metric" else miles
 
 
 def estimate_stale_data(last_data):
@@ -893,8 +893,8 @@ class Overhead:
     def _grab_tracked(self, flight_input, zone_flights=None):
         flight_input = flight_input.strip().upper()
 
-        # Convert IATA format (UA353) to ICAO (UAL353) for gRPC filter
-        if len(flight_input) >= 3 and flight_input[:2].isalpha() and flight_input[2:3].isdigit():
+        # Convert IATA format (UA353, B6555) to ICAO (UAL353, JBU555) for gRPC filter
+        if len(flight_input) >= 3 and flight_input[:2] in IATA_TO_ICAO and flight_input[2:3].isdigit():
             icao_prefix = IATA_TO_ICAO.get(flight_input[:2])
             if icao_prefix:
                 flight_input = icao_prefix + flight_input[2:]

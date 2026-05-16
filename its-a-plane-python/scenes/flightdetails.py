@@ -132,17 +132,14 @@ class FlightDetailsScene(object):
         # Handle scrolling
         self.flight_position -= 1
         if self.flight_position + flight_no_text_length < 0:
-            # Text has scrolled off - check if minimum display time has elapsed
-            if self._page_frame_count >= MIN_PAGE_FRAMES and len(self._data) > 1:
-                self._data_index = (self._data_index + 1) % len(self._data)
-                self._data_all_looped = (not self._data_index) or self._data_all_looped
-                self._page_frame_count = 0
-                self.reset_scene()
-            else:
-                # Loop the scroll back to start without advancing page
-                self.flight_position = screen.WIDTH
+            # Text has scrolled off — mark region as complete but don't advance yet
+            # (display/__init__.py will advance when all regions are complete)
+            if self._page_frame_count >= MIN_PAGE_FRAMES:
+                self.mark_scroll_complete("flight_details")
+            # Loop the scroll back to start
+            self.flight_position = screen.WIDTH
 
     @Animator.KeyFrame.add(0)
-    def reset_scrolling(self):
+    def reset_flight_scrolling(self):
         self.flight_position = screen.WIDTH
         self._page_frame_count = 0

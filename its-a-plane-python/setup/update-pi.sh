@@ -49,7 +49,7 @@ echo ""
 if [ ! -d "$RGB_MATRIX_DIR" ]; then
     echo "==> rpi-rgb-led-matrix not found in $REPO_DIR"
     echo "==> Downloading and running Adafruit RGB Matrix installer..."
-    curl -sSL https://raw.githubusercontent.com/adafruit/Raspberry-Pi-Installer-Scripts/main/rgb-matrix.sh | bash
+    curl -sSL https://raw.githubusercontent.com/adafruit/Raspberry-Pi-Installer-Scripts/main/rgb-matrix.sh | sudo bash
     echo "   ✓ RGB Matrix helper library installed"
 else
     echo "==> rpi-rgb-led-matrix already present, skipping installer"
@@ -72,8 +72,8 @@ echo ""
 
 # --- Step 2: Install Python dependencies (using a virtual environment) ---
 echo "==> Installing system packages..."
-apt update -qq
-apt install -y -qq \
+sudo apt update -qq
+sudo apt install -y -qq \
     build-essential python3-pip python3-venv python3-dev \
     python3-setuptools python3-wheel \
     cython3 libgraphicsmagick++1-dev \
@@ -101,6 +101,12 @@ else
     echo "   ⚠ rgbmatrix bindings not found at $RGB_MATRIX_DIR/bindings/python"
     echo "     Run the Adafruit RGB Matrix installer first, or:"
     echo "     cd $RGB_MATRIX_DIR/bindings/python && $VENV_DIR/bin/pip install -e ."
+    cd "$REPO_DIR"
+    curl https://raw.githubusercontent.com/adafruit/Raspberry-Pi-Installer-Scripts/main/rgb-matrix.sh > rgb-matrix.sh
+    sudo bash rgb-matrix.sh
+    cd ~/rpi-rgb-led-matrix/bindings/python
+    sudo make
+sudo pip install . --break-system-packages
 fi
 echo "   ✓ Dependencies installed"
 
@@ -114,12 +120,12 @@ if [ ! -f "$ENV_DEST" ]; then
     read -rp "  FR24 API Key (subscription_key|token): " FR24_KEY
     read -rp "  Tomorrow.io API Key: " TOMORROW_KEY
 
-    cat > "$ENV_DEST" <<EOF
+    sudo cat > "$ENV_DEST" <<EOF
 FR24_API_KEY=${FR24_KEY}
 TOMORROW_API_KEY=${TOMORROW_KEY}
 EOF
-    chown root:root "$ENV_DEST"
-    chmod 0600 "$ENV_DEST"
+    sudo chown root:root "$ENV_DEST"
+    sudo chmod 0600 "$ENV_DEST"
     echo "  → Saved to $ENV_DEST (mode 0600)"
 else
     echo "==> $ENV_DEST already exists, keeping existing keys"
@@ -129,10 +135,10 @@ echo ""
 
 # --- Step 4: Install and enable systemd service ---
 echo "==> Installing systemd service..."
-sed "s|__REPO_DIR__|$REPO_DIR|g" "$REPO_DIR/its-a-plane-python/setup/plane-tracker.service" > /etc/systemd/system/plane-tracker.service
-chmod 0644 /etc/systemd/system/plane-tracker.service
-systemctl daemon-reload
-systemctl enable plane-tracker.service
+sudo sed "s|__REPO_DIR__|$REPO_DIR|g" "$REPO_DIR/its-a-plane-python/setup/plane-tracker.service" > /etc/systemd/system/plane-tracker.service
+sudo chmod 0644 /etc/systemd/system/plane-tracker.service
+sudo systemctl daemon-reload
+sudo systemctl enable plane-tracker.service
 
 echo ""
 echo "============================================"
