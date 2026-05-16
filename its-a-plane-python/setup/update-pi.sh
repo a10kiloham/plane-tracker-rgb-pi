@@ -10,7 +10,14 @@
 #
 set -euo pipefail
 
-REPO_DIR="$HOME/plane-tracker-rgb-pi"
+# Get the actual user's home directory (not root's) when run with sudo
+if [ -n "${SUDO_USER:-}" ]; then
+    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+else
+    USER_HOME="$HOME"
+fi
+
+REPO_DIR="$USER_HOME/plane-tracker-rgb-pi"
 FORK_URL="https://github.com/a10kiloham/plane-tracker-rgb-pi.git"
 ENV_DEST="/etc/plane-tracker.env"
 RGB_MATRIX_DIR="$REPO_DIR/rpi-rgb-led-matrix"
@@ -133,9 +140,20 @@ fi
 
 echo ""
 
-# --- Step 4: Install and enable systemd service ---
+# --- Step 4: Fix permissions ---
+echo "==> Setting proper permissions..."
+# Make venv and project directories accessible to root (service runs as root)
+sudo chown -R root:root "$REPO_DIR"
+sudo chmod -R 755 "$REPO_DIR"
+# Ensure the working directory exists
+sudo mkdir -p "$REPO_DIR/its-a-plane-python"
+echo "   ✓ Permissions set"
+
+echo ""
+
+# --- Step 5: Install and enable systemd service ---
 echo "==> Installing systemd service..."
-sudo sed "s|__REPO_DIR__|$REPO_DIR|g" "$REPO_DIR/its-a-plane-python/setup/plane-tracker.service" > /etc/systemd/system/plane-tracker.service
+sed "s|__REPO_DIR__|$REPO_DIR|g" "$REPO_DIR/its-a-plane-python/setup/plane-tracker.service" | sudo tee /etc/systemd/system/plane-tracker.service > /dev/null
 sudo chmod 0644 /etc/systemd/system/plane-tracker.service
 sudo systemctl daemon-reload
 sudo systemctl enable plane-tracker.service
