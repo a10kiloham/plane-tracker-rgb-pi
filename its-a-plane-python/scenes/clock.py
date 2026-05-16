@@ -4,21 +4,13 @@ from utilities.animator import Animator
 from setup import colours, fonts, frames
 from rgbmatrix import graphics
 import logging
-from config import CLOCK_FORMAT, NIGHT_END, NIGHT_START
-
-# Configure logging
-#logging.basicConfig(filename='myapp.log', level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+from config import CLOCK_FORMAT
 
 # Setup
 CLOCK_FONT = fonts.large_bold
 CLOCK_POSITION = (0, 11)
 DAY_COLOUR = colours.LIGHT_ORANGE
 NIGHT_COLOUR = colours.LIGHT_BLUE
-
-
-# Convert NIGHT_START and NIGHT_END to datetime objects 
-NIGHT_START_TIME = datetime.strptime(NIGHT_START, "%H:%M") 
-NIGHT_END_TIME = datetime.strptime(NIGHT_END, "%H:%M")
 
 class ClockScene(object):
     def __init__(self):
@@ -27,16 +19,18 @@ class ClockScene(object):
         self.today_sunrise = None
         self.today_sunset = None
         self.last_fetch_date = None  # Store the date of the last forecast fetch
+        self._forecast_retry_after = 0
 
     def calculate_sunrise_sunset(self):
         now = datetime.now()
 
         try:
             # Only fetch forecast if it's a new day or if no cached data
-            if self.last_fetch_date != now.date():
+            if self.last_fetch_date != now.date() and now.timestamp() > self._forecast_retry_after:
                 forecast = grab_forecast(tag="ClockScene")
                 if not forecast:  # None or empty list
                     logging.error("Forecast data missing or API error.")
+                    self._forecast_retry_after = now.timestamp() + 300  # 5 min cooldown
                     return None, None
 
                 for day in forecast:
@@ -53,6 +47,7 @@ class ClockScene(object):
 
         except Exception as e:
             logging.error(f"Error fetching forecast: {e}")
+            self._forecast_retry_after = now.timestamp() + 300  # 5 min cooldown
             return None, None
 
         return self.today_sunrise, self.today_sunset

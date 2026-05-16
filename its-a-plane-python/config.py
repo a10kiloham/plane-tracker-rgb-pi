@@ -30,6 +30,7 @@ def _require(name: str) -> str:
 # --- API Keys ---
 FR24_API_KEY = _require("FR24_API_KEY")
 TOMORROW_API_KEY = _require("TOMORROW_API_KEY")
+AIRLABS_API_KEY = os.environ.get("AIRLABS_API_KEY", "")
 
 # --- Bounding box for overhead flight detection ---
 ZONE_HOME = {
@@ -64,7 +65,8 @@ HAT_PWM_ENABLED = _bool(os.environ.get("HAT_PWM_ENABLED", "True"))
 # --- Flight filtering ---
 MIN_ALTITUDE = int(os.environ.get("MIN_ALTITUDE", "0"))
 JOURNEY_CODE_SELECTED = _require("JOURNEY_CODE_SELECTED")
-JOURNEY_BLANK_FILLER = os.environ.get("JOURNEY_BLANK_FILLER", " ? ")
+_raw_filler = os.environ.get("JOURNEY_BLANK_FILLER", "").strip()
+JOURNEY_BLANK_FILLER = f" {_raw_filler} " if _raw_filler else " ? "
 SPEED_UNITS = os.environ.get("SPEED_UNITS", "metric")
 
 # --- Logging & notifications ---
