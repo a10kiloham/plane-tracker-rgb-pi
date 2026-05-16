@@ -476,6 +476,7 @@ class Overhead:
         self._tracked_last_callsign = ""     # last callsign we polled for
         self._tracked_last_eta = None        # last known estimated arrival (unix ts)
         self._tracked_last_data = None       # last known good tracked data
+        self._tracked_schedule_cache = {}    # callsign -> AirLabs schedule result (or None)
         self._first_flight_logged = False    # log first flight details as JSON
         self._cycle_count = 0               # total grab_data cycles
         self._total_flights_seen = 0        # lifetime flight count
@@ -801,6 +802,7 @@ class Overhead:
                     self._tracked_miss_count = 0
                     self._tracked_last_eta = None
                     self._tracked_last_data = None
+                    self._tracked_schedule_cache.clear()
 
                 tracked_data = self._grab_tracked(tracked_callsign, zone_flights=flights)
 
@@ -838,12 +840,58 @@ class Overhead:
                                 self._do_auto_wipe()
                             elif self._tracked_last_data:
                                 tracked_data = estimate_stale_data(self._tracked_last_data)
-                    # If never live, don't increment — pre-flight waiting
+                    else:
+                        # Never been live — try AirLabs schedule
+                        # Cache successful results; retry on failure (airlabs module has 5-min TTL)
+                        sched = self._tracked_schedule_cache.get(tracked_callsign)
+                        if sched is None:
+                            from utilities.airlabs import get_flight_schedule
+                            sched = get_flight_schedule(tracked_callsign)
+                            if sched:
+                                self._tracked_schedule_cache[tracked_callsign] = sched
+                        if sched:
+                            # Convert callsign to ICAO for logo lookup (UA353 → UAL353)
+                            sched_cs = tracked_callsign
+                            if len(sched_cs) >= 3 and sched_cs[:2] in IATA_TO_ICAO and sched_cs[2:3].isdigit():
+                                icao_pfx = IATA_TO_ICAO.get(sched_cs[:2])
+                                if icao_pfx:
+                                    sched_cs = icao_pfx + sched_cs[2:]
+                            tracked_data = {
+                                "callsign": sched_cs,
+                                "number": sched.get("flight_number", tracked_callsign),
+                                "airline_name": "",
+                                "is_live": False,
+                                "is_scheduled": True,
+                                "origin": sched.get("origin", ""),
+                                "destination": sched.get("destination", ""),
+                                "dep_time": sched.get("dep_time", ""),
+                                "arr_time": sched.get("arr_time", ""),
+                                "schedule_status": sched.get("status", ""),
+                                "aircraft_type": "",
+                                "altitude": 0,
+                                "ground_speed": 0,
+                                "heading": 0,
+                                "vertical_speed": 0,
+                                "dist_remaining": None,
+                                "total_distance": None,
+                                "time_remaining": None,
+                                "latitude": None,
+                                "longitude": None,
+                                "last_seen_ts": 0,
+                                "dest_lat": 0,
+                                "dest_lon": 0,
+                            }
+
+            # Keep schedule cache even after flight goes live — arr_time_utc
+            # is used as reality check to prevent premature auto-wipe when
+            # a taxiing plane briefly appears then drops from the feed.
 
             # Update tracked status for pipeline summary
             if tracked_data:
                 if tracked_data.get("is_live"):
                     stats["tracked_status"] = "LIVE"
+                elif tracked_data.get("is_scheduled"):
+                    stats["tracked_status"] = "SCHEDULED"
                 else:
                     stats["tracked_status"] = "ESTIMATED (stale)"
             elif stats.get("tracked_callsign"):
