@@ -46,15 +46,14 @@ def lookup_flight(callsign):
     Returns a dict with found=True/False and flight info if found.
     """
     callsign = callsign.strip().upper()
+    original_callsign = callsign  # preserve for AirLabs (IATA works better)
 
     # Convert IATA (UA353) to ICAO (UAL353)
     from utilities.overhead import IATA_TO_ICAO
-    if len(callsign) >= 3 and callsign[:2].isalpha() and callsign[2:3].isdigit():
+    if len(callsign) >= 3 and callsign[:2] in IATA_TO_ICAO and callsign[2:3].isdigit():
         icao_prefix = IATA_TO_ICAO.get(callsign[:2])
         if icao_prefix:
             callsign = icao_prefix + callsign[2:]
-
-    airline_icao = callsign[:3] if len(callsign) >= 3 and callsign[:3].isalpha() else None
 
     try:
         api = _fr24_client
@@ -63,6 +62,22 @@ def lookup_flight(callsign):
         match = api.find_by_callsign(callsign)
 
         if not match:
+            # Not airborne — try AirLabs for scheduled flight (use original IATA format)
+            from utilities.airlabs import get_flight_schedule
+            sched = get_flight_schedule(original_callsign)
+            if sched:
+                return {
+                    "found": True,
+                    "scheduled": True,
+                    "callsign": callsign,
+                    "number": sched.get("flight_number", callsign),
+                    "airline": "",
+                    "origin": sched.get("origin", "???"),
+                    "destination": sched.get("destination", "???"),
+                    "dep_time": sched.get("dep_time", ""),
+                    "status": sched.get("status", ""),
+                    "summary": f"Scheduled: {sched.get('flight_number', callsign)} {sched.get('origin', '?')}→{sched.get('destination', '?')} Dep {sched.get('dep_time', '?')}",
+                }
             return {"found": False}
 
         # Get full details for airline name and route
@@ -101,7 +116,7 @@ def index():
 
 @app.get("/closest/json")
 def closest_json():
-    return jsonify(load_json(CLOSEST_FILE, {}))
+    return jsonify(load_json(CLOSEST_FILE, []))
 
 
 @app.get("/farthest/json")
@@ -128,6 +143,8 @@ def tracked_json():
 def tracked_lookup():
     """Live lookup — check if a flight is currently findable before saving."""
     data = request.get_json(force=True)
+    if not data:
+        return jsonify({"found": False, "error": "Invalid request"}), 400
     callsign = data.get("callsign", "").strip().upper()
     if not callsign:
         return jsonify({"found": False, "error": "No callsign provided"})
@@ -138,14 +155,70 @@ def tracked_lookup():
 @app.post("/tracked/set")
 def tracked_set():
     data = request.get_json(force=True)
-    callsign = data.get("callsign", "").strip().upper()
+    if not data:
+        return jsonify({"message": "Invalid request"}), 400
+    callsign = data.get("callsign", "").strip().upper()[:10]
     try:
         with open(TRACKED_FILE, "w", encoding="utf-8") as f:
             json.dump({"callsign": callsign}, f)
+        try:
+            os.chmod(TRACKED_FILE, 0o666)
+        except OSError:
+            pass
         msg = f"Now tracking {callsign}." if callsign else "Tracking cleared."
         return jsonify({"message": msg})
     except Exception as e:
         return jsonify({"message": f"Error saving: {e}"}), 500
+
+
+@app.post("/route/search")
+def route_search():
+    """Search for live flights by origin→destination using gRPC server-side filter."""
+    import re
+    data = request.get_json(force=True)
+    if not data:
+        return jsonify({"flights": [], "error": "Invalid request"}), 400
+    origin = data.get("origin", "").strip().upper()
+    destination = data.get("destination", "").strip().upper()
+    if not origin or not destination:
+        return jsonify({"flights": [], "error": "Origin and destination required"}), 400
+    if not re.match(r'^[A-Z]{3,4}$', origin) or not re.match(r'^[A-Z]{3,4}$', destination):
+        return jsonify({"flights": [], "error": "Airport codes must be 3-4 letters"}), 400
+    try:
+        matches = _fr24_client.find_by_route(origin, destination)
+        results = []
+        for m in matches[:50]:  # limit to 50 results
+            results.append({
+                "callsign": m.callsign or "N/A",
+                "number": m.number or m.callsign or "N/A",
+                "airline": m.airline_name or "",
+                "aircraft": m.aircraft_code or "N/A",
+                "altitude": m.altitude or 0,
+                "speed": m.ground_speed or 0,
+            })
+        return jsonify({"flights": results})
+    except Exception as e:
+        print(f"Route search error: {e}")
+        return jsonify({"flights": [], "error": str(e)}), 500
+
+
+@app.get("/stats")
+def stats_page():
+    """Flight counter stats dashboard."""
+    return render_template("stats.html")
+
+
+@app.get("/stats/<date>")
+def stats_day_page(date):
+    """Per-day stats drill-down."""
+    return render_template("stats_day.html", date=date)
+
+
+@app.get("/stats/json")
+def stats_json():
+    """Flight counter data."""
+    counter_file = os.path.join(DATA_DIR, "flight_counter.json")
+    return jsonify(load_json(counter_file, {}))
 
 
 # Serve map files from the data directory
