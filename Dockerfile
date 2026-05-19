@@ -45,6 +45,7 @@ COPY icons/ ./icons/
 # Extract airline logos if logo.zip exists
 COPY logo.zip* ./
 RUN if [ -f logo.zip ]; then \
+        mkdir -p its-a-plane-python/logos && \
         unzip -qo logo.zip -d its-a-plane-python/logos && \
         chmod -R a+r its-a-plane-python/logos && \
         rm logo.zip; \
