@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  plane-tracker:
+    container_name: plane-tracker
+    image: plane-tracker:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    # Environment variables from .env file
+    env_file:
+      - .env
+    
+    # Expose port 6969 for reverse proxy
+    ports:
+      - "6969:6969"
+    
+    # Persistent data storage
+    volumes:
+      - plane-tracker-data:/var/lib/plane-tracker
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Network configuration
+    networks:
+      - plane-tracker-net
+    
+    # Resource limits (optional - adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+# Named volumes for persistence
+volumes:
+  plane-tracker-data:
+    driver: local
+
+# Network configuration
+networks:
+  plane-tracker-net:
+    driver: bridge
