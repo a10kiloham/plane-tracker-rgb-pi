@@ -580,6 +580,11 @@ class Overhead:
         logger.info("\n".join(lines))
 
     def grab_data(self):
+        with self._lock:
+            if self._processing:
+                logger.debug("grab_data: previous _grab still running, skipping")
+                return
+            self._processing = True
         Thread(target=self._grab, daemon=True).start()
 
     def safe_get(self, d, *keys, default=None):
@@ -592,7 +597,6 @@ class Overhead:
     def _grab(self):
         with self._lock:
             self._new_data = False
-            self._processing = True
 
         overhead_data = []
         tracked_data = None
@@ -763,7 +767,7 @@ class Overhead:
                             [pt["lat"], pt["lng"]]
                             for pt in raw_trail
                             if isinstance(pt, dict) and pt.get("alt", 0) > 0
-                        ]
+                        ][-200:]  # cap trail length for memory
 
                         # Determine livery note text (only if special and short)
                         livery_note = ""
