@@ -16,11 +16,13 @@ CSV_URL    = "https://raw.githubusercontent.com/npow/airline-codes/master/airlin
 
 # Pretty display names that override the database for common regionals
 _OVERRIDES = {
-    "ENY": "American Eagle",   "JIA": "American Eagle",
-    "RPA": "United Express",   "GJS": "United Express",
-    "SKW": "SkyWest Airlines", "EDV": "Delta Connection",
-    "CPZ": "United Express",   "ASQ": "Delta Connection",
+    "ENY": "American Eagle",   "JIA": "PSA Airlines",
+    "RPA": "Republic Airways", "GJS": "GoJet Airlines",
+    "UCA": "United Express",   "CPZ": "Commutair",
+    "SKW": "SkyWest Airlines", "EDV": "Endeavor Air",
+    "ASQ": "ExpressJet",       "PDT": "Piedmont Airlines",
     "TIV": "Thrive Aviation",
+    "VJA": "Vista America",
 }
 
 _db     = {}
