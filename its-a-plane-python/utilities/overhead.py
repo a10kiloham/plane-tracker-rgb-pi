@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import math
 import socket
@@ -12,6 +13,38 @@ from utilities.fr24_client import FR24Client, LiveFlight
 from httpx import ConnectError, TimeoutException
 
 logger = logging.getLogger(__name__)
+
+
+_VALID_CODE = re.compile(r"^[A-Z0-9]{3,4}$")
+
+
+def _clean_code(s):
+    """An airport code (3-4 alphanumerics) or "".
+
+    The fr24 gRPC feed hands back junk for a route-less aircraft — the literal
+    "UNKNOWN", a full airport name, "N/A" — with no shape check. The journey
+    scene draws origin/destination verbatim, so a long string collides with the
+    arrow and pushes the destination off the 64px panel. Map anything that isn't
+    a short code to "" so the scene shows its " ? " filler.
+    """
+    s = (s or "").strip().upper()
+    return s if _VALID_CODE.match(s) else ""
+
+
+_JUNK_AIRLINE = {"", "unknown", "n/a", "na", "none", "null"}
+
+
+def _clean_airline(name):
+    """An airline / owner display name, or "" for a junk placeholder.
+
+    The fr24 gRPC feed returns the literal string "Unknown" (its own mixed
+    casing) as registered_owners for aircraft it has no owner record for, and
+    adsbdb can return "UNKNOWN". Either would otherwise render verbatim as the
+    airline on the flight display. Map such placeholders to "" — the same way
+    _clean_code drops junk route codes — so the owner-lookup fallback still runs
+    and the panel never shows the word "Unknown" as an airline.
+    """
+    return "" if (name or "").strip().lower() in _JUNK_AIRLINE else name
 
 from config import (
     DISTANCE_UNITS,
@@ -617,7 +650,7 @@ class Overhead:
 
                         # Airline name: try local database first, then FR24's registered_owners
                         flight_number = self.safe_get(d, "schedule_info", "flight_number", default="")
-                        airline_name = self.safe_get(d, "aircraft_info", "registered_owners", default="")
+                        airline_name = _clean_airline(self.safe_get(d, "aircraft_info", "registered_owners", default=""))
 
                         # Determine airline ICAO from callsign prefix
                         owner_icao = f.airline_icao or ""
@@ -661,18 +694,17 @@ class Overhead:
                                 and f.registration[1:2].isdigit()):
                             stats["adsbdb_lookups"] += 1
                             ac_info = _adsbdb_aircraft(f.registration)
-                            if ac_info.get("owner"):
-                                airline_name = ac_info["owner"]
-                                if airline_name == airline_name.upper():
-                                    airline_name = airline_name.title()
+                            owner = _clean_airline(ac_info.get("owner", ""))
+                            if owner:
+                                airline_name = owner.title() if owner == owner.upper() else owner
 
                         # Livery note: when painted_as_id differs from operated_by_id
                         painted_as_id = self.safe_get(d, "schedule_info", "painted_as_id", default=0) or 0
                         operated_by_id = self.safe_get(d, "schedule_info", "operated_by_id", default=0) or 0
                         has_special_livery = (painted_as_id != 0 and operated_by_id != 0 and painted_as_id != operated_by_id)
 
-                        origin = f.origin_airport_iata or ""
-                        destination = f.destination_airport_iata or ""
+                        origin = _clean_code(f.origin_airport_iata)
+                        destination = _clean_code(f.destination_airport_iata)
                         callsign = f.callsign or ""
 
                         t = self.safe_get(d, "time", default={})
@@ -866,8 +898,8 @@ class Overhead:
                                 "airline_name": "",
                                 "is_live": False,
                                 "is_scheduled": True,
-                                "origin": sched.get("origin", ""),
-                                "destination": sched.get("destination", ""),
+                                "origin": _clean_code(sched.get("origin", "")),
+                                "destination": _clean_code(sched.get("destination", "")),
                                 "dep_time": sched.get("dep_time", ""),
                                 "arr_time": sched.get("arr_time", ""),
                                 "schedule_status": sched.get("status", ""),
@@ -978,8 +1010,8 @@ class Overhead:
             eta = fp.get("eta", 0) or 0
 
             # Look up airport coordinates from local database for distance calculations
-            origin_code = match.origin_airport_iata or ""
-            dest_code = match.destination_airport_iata or ""
+            origin_code = _clean_code(match.origin_airport_iata)
+            dest_code = _clean_code(match.destination_airport_iata)
             dest_coords = _airport_coords(dest_code)
             origin_coords = _airport_coords(origin_code)
 
@@ -1050,7 +1082,7 @@ class Overhead:
             time_est_arr   = self.safe_get(time_details, "estimated", "arrival") or eta or None
 
             # Airline name: try local database, then FR24
-            airline_name = match.airline_name or ""
+            airline_name = _clean_airline(match.airline_name or "")
             if not airline_name:
                 airline_icao_code = match.airline_icao or ""
                 airline_name = _airline_name_lookup(airline_icao_code)
@@ -1060,18 +1092,17 @@ class Overhead:
                     and match.registration.startswith("N")
                     and match.registration[1:2].isdigit()):
                 ac_info = _adsbdb_aircraft(match.registration)
-                if ac_info.get("owner"):
-                    airline_name = ac_info["owner"]
-                    if airline_name == airline_name.upper():
-                        airline_name = airline_name.title()
+                owner = _clean_airline(ac_info.get("owner", ""))
+                if owner:
+                    airline_name = owner.title() if owner == owner.upper() else owner
 
             return {
                 "callsign": flight_input,
                 "number": match.number or flight_input,
                 "airline_name": airline_name,
                 "is_live": True,
-                "origin": match.origin_airport_iata or "",
-                "destination": match.destination_airport_iata or "",
+                "origin": _clean_code(match.origin_airport_iata),
+                "destination": _clean_code(match.destination_airport_iata),
                 "dest_lat": dest_lat or 0,
                 "dest_lon": dest_lon or 0,
                 "aircraft_type": match.aircraft_code or "",
