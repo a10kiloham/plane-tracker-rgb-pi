@@ -416,3 +416,39 @@ class TestOrdinal:
         assert ordinal(21) == "21st"
         assert ordinal(22) == "22nd"
         assert ordinal(23) == "23rd"
+
+
+def test_clean_code_maps_junk_route_strings_to_empty():
+    """The fr24 gRPC feed hands back junk ('UNKNOWN', full names, 'N/A') for
+    route-less aircraft. It must not reach the journey scene (which draws it
+    verbatim and collides with the arrow); map non-code shapes to '' -> filler."""
+    from utilities.overhead import _clean_code
+    assert _clean_code("EWR") == "EWR"
+    assert _clean_code("KJFK") == "KJFK"
+    assert _clean_code("ewr") == "EWR"          # normalised to upper
+    assert _clean_code("UNKNOWN") == ""
+    assert _clean_code("N/A") == ""
+    assert _clean_code("Newark Liberty") == ""  # a full name
+    assert _clean_code("") == ""
+    assert _clean_code(None) == ""
+    assert _clean_code("AB") == ""              # too short for a code
+    assert _clean_code("ABCDE") == ""           # too long
+
+
+def test_clean_airline_maps_unknown_placeholders_to_empty():
+    """The fr24 gRPC feed returns the literal 'Unknown' (its own casing) as
+    registered_owners for aircraft with no owner record; adsbdb can return
+    'UNKNOWN'. Either would render verbatim as the airline on the flight
+    display. Map the placeholders to '' so the owner-lookup fallback runs and
+    'Unknown' never shows as an airline -- real names pass through intact."""
+    from utilities.overhead import _clean_airline
+    assert _clean_airline("Unknown") == ""
+    assert _clean_airline("UNKNOWN") == ""
+    assert _clean_airline(" unknown ") == ""
+    assert _clean_airline("N/A") == ""
+    assert _clean_airline("None") == ""
+    assert _clean_airline("") == ""
+    assert _clean_airline(None) == ""
+    assert _clean_airline("NetJets") == "NetJets"
+    assert _clean_airline("Private owner") == "Private owner"
+    assert _clean_airline("Unknown Air Ltd") == "Unknown Air Ltd"  # whole-string match only
