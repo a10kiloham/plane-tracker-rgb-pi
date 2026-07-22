@@ -44,7 +44,8 @@ def _clean_airline(name):
     _clean_code drops junk route codes — so the owner-lookup fallback still runs
     and the panel never shows the word "Unknown" as an airline.
     """
-    return "" if (name or "").strip().lower() in _JUNK_AIRLINE else name
+    name = (name or "").strip()
+    return "" if name.lower() in _JUNK_AIRLINE else name
 
 from config import (
     DISTANCE_UNITS,
