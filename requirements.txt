@@ -19,3 +19,7 @@ grpcio
 # Maps, images, HTTP utilities
 Pillow
 requests
+
+# ISS pass prediction (optional feature — ISS_ENABLED; module degrades
+# gracefully if missing)
+ephem

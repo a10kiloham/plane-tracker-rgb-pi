@@ -46,8 +46,8 @@ class FlightDetailsScene(object):
     @Animator.KeyFrame.add(1)
     def flight_details(self, count):
 
-        # Guard against no data
-        if len(self._data) == 0:
+        # Guard against no data or ISS takeover
+        if len(self._data) == 0 or getattr(self, "_iss_active", False):
             # Other scenes own the canvas; force an indicator redraw
             # when flight data returns.
             self._indicator_state = "reset"
