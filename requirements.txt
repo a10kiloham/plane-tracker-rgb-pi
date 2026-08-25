@@ -23,3 +23,13 @@ requests
 # ISS pass prediction (optional feature — ISS_ENABLED; module degrades
 # gracefully if missing)
 ephem
+
+# ATC radio (optional feature — ATC_ENABLED; utilities/atc_audio.py imports
+# these lazily and degrades gracefully if missing). Install only what your
+# selected output needs:
+#   usb output:        sudo apt install mpv   (plus ffmpeg for the relay)
+#   chromecast output: pip install pychromecast zeroconf
+#   airplay output:    pip install pyatv
+# pychromecast
+# zeroconf
+# pyatv

@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ATC Radio</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <style>
+        body { font-family: Arial; padding: 20px; background: #f5f5f5; }
+        h1 { margin-bottom: 10px; }
+        a { color: #0066cc; }
+        .box {
+            margin: 24px 0;
+            padding: 18px 20px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            max-width: 520px;
+        }
+        .box h2 { margin: 0 0 12px 0; font-size: 18px; }
+        .row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+        .row label { font-size: 14px; color: #555; min-width: 70px; }
+        select, input[type=range] {
+            font-size: 15px; padding: 5px 8px;
+            border: 1px solid #ccc; border-radius: 4px; background: white;
+        }
+        input[type=range] { flex: 1; min-width: 140px; padding: 0; border: none; }
+        button {
+            font-size: 15px; padding: 7px 14px; cursor: pointer;
+            border: none; border-radius: 4px; background: #0066cc; color: white;
+        }
+        button.stop { background: #888; }
+        button.small { font-size: 13px; padding: 5px 10px; background: #eee; color: #333; border: 1px solid #ccc; }
+        button:disabled { background: #aaa; cursor: wait; }
+        #now-playing { font-size: 16px; margin-bottom: 4px; }
+        #now-playing .live {
+            background: #d33; color: white; font-size: 11px; font-weight: bold;
+            border-radius: 3px; padding: 2px 6px; margin-right: 8px; vertical-align: 2px;
+        }
+        #sub-status { color: #777; font-size: 13px; min-height: 16px; }
+        .warn {
+            margin: 12px 0; padding: 8px 10px; font-size: 14px; border-radius: 4px;
+            background: #fff3e0; border: 1px solid #ffcc80; color: #7f4f00; display: none;
+        }
+        .note { font-size: 13px; color: #888; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>ATC Radio</h1>
+    <div style="margin-bottom:14px;"><a href="/">&larr; Dashboard</a></div>
+
+    <div class="warn" id="disabled-warn">
+        ATC audio is disabled. Set <code>ATC_ENABLED=True</code> in the tracker's
+        environment file and restart the service to use it.
+    </div>
+
+    <div class="box">
+        <h2>Now Playing</h2>
+        <div id="now-playing">Loading&hellip;</div>
+        <div id="sub-status"></div>
+        <div class="row">
+            <button id="btn-start" onclick="atcStart()">Play</button>
+            <button id="btn-stop" class="stop" onclick="atcStop()">Stop</button>
+        </div>
+        <div class="warn" id="quiet-warn">
+            Quiet hours are active — auto mode won't start audio.
+            Pressing Play overrides until the window ends.
+        </div>
+    </div>
+
+    <div class="box">
+        <h2>Tuning</h2>
+        <div class="row">
+            <label for="mode-select">Mode</label>
+            <select id="mode-select" onchange="setMode(this.value)">
+                <option value="auto">Auto (follow overhead traffic)</option>
+                <option value="manual">Manual</option>
+                <option value="off">Off</option>
+            </select>
+        </div>
+        <div class="row">
+            <label for="station-select">Station</label>
+            <select id="station-select" onchange="setStation(this.value)">
+                <option value="">Auto-pick</option>
+            </select>
+        </div>
+        <p class="note">Picking a station switches to manual mode. The station
+        list is nearby airports/centers with known LiveATC feeds.</p>
+    </div>
+
+    <div class="box">
+        <h2>Output</h2>
+        <div class="row">
+            <label for="output-select">Play on</label>
+            <select id="output-select" onchange="selectOutput(this.value)"></select>
+            <button class="small" onclick="loadOutputs(true)">Rescan</button>
+        </div>
+        <div class="row">
+            <label for="volume-range">Volume</label>
+            <input type="range" id="volume-range" min="0" max="100" step="1"
+                   onchange="setVolume(this.value)">
+            <span id="volume-label" style="font-size:13px;color:#555;width:34px;"></span>
+        </div>
+        <div class="row" id="pair-row" style="display:none;">
+            <button class="small" onclick="pairAirplay()">Pair AirPlay device&hellip;</button>
+            <span id="pair-status" style="font-size:13px;color:#555;"></span>
+        </div>
+        <p class="note">USB plays through mpv on the Pi. Chromecast / AirPlay
+        targets appear here when the optional pychromecast / pyatv packages are
+        installed (see requirements.txt).</p>
+    </div>
+
+    <script>
+        let st = null;
+        let refreshTimer = null;
+
+        function esc(s) {
+            const d = document.createElement("div");
+            d.textContent = s == null ? "" : String(s);
+            return d.innerHTML;
+        }
+
+        async function refresh() {
+            try {
+                const res = await fetch("/api/atc/status");
+                st = await res.json();
+            } catch (e) { return; }
+            document.getElementById("disabled-warn").style.display =
+                st.enabled ? "none" : "block";
+            const np = document.getElementById("now-playing");
+            if (st.playing && st.station) {
+                np.innerHTML = '<span class="live">LIVE</span>' +
+                    esc(st.station_label || st.station);
+            } else if (st.station) {
+                np.textContent = "Tuned: " + (st.station_label || st.station) + " (stopped)";
+            } else {
+                np.textContent = st.mode === "off" ? "Off" : "No station selected yet";
+            }
+            const sub = [];
+            if (st.mode) sub.push("mode: " + st.mode);
+            if (st.station) sub.push("mount: " + st.station);
+            if (st.quiet_hours) sub.push("quiet: " + st.quiet_hours);
+            document.getElementById("sub-status").textContent = sub.join("  ·  ");
+            document.getElementById("quiet-warn").style.display =
+                (st.in_quiet_hours && !st.playing && st.enabled) ? "block" : "none";
+
+            document.getElementById("mode-select").value =
+                ["auto", "manual", "off"].includes(st.mode) ? st.mode : "off";
+            const ss = document.getElementById("station-select");
+            if (ss.querySelector(`option[value="${st.station}"]`)) ss.value = st.station;
+            const os = document.getElementById("output-select");
+            if (os.querySelector(`option[value="${CSS.escape(st.output)}"]`)) os.value = st.output;
+            const vr = document.getElementById("volume-range");
+            if (document.activeElement !== vr) vr.value = st.volume;
+            document.getElementById("volume-label").textContent = st.volume;
+            document.getElementById("pair-row").style.display =
+                (st.output || "").startsWith("airplay") ? "flex" : "none";
+            if (st.airplay_needs_pairing)
+                document.getElementById("pair-status").textContent =
+                    "Receiver requires pairing";
+        }
+
+        async function post(url, body) {
+            try {
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body || {})
+                });
+                st = await res.json();
+            } catch (e) {}
+            refresh();
+        }
+
+        function atcStart() { post("/api/atc/start"); }
+        function atcStop()  { post("/api/atc/stop"); }
+        function setMode(m) { post("/api/atc/mode", { mode: m }); }
+        function setStation(s) { post("/api/atc/station", { station: s }); }
+        function setVolume(v) {
+            document.getElementById("volume-label").textContent = v;
+            post("/api/atc/volume", { volume: parseInt(v, 10) });
+        }
+        function selectOutput(o) { post("/api/atc/select-output", { output: o }); }
+
+        async function loadStations() {
+            try {
+                const res = await fetch("/api/atc/stations?nearby=1");
+                const data = await res.json();
+                const ss = document.getElementById("station-select");
+                ss.innerHTML = '<option value="">Auto-pick</option>';
+                for (const ap of (data.nearby || [])) {
+                    for (const f of (ap.feeds || [])) {
+                        const opt = document.createElement("option");
+                        opt.value = f.code;
+                        opt.textContent =
+                            `${ap.icao} ${f.label} (${ap.dist_mi} mi)`;
+                        ss.appendChild(opt);
+                    }
+                }
+                if (st && st.station &&
+                        !ss.querySelector(`option[value="${st.station}"]`)) {
+                    const opt = document.createElement("option");
+                    opt.value = st.station;
+                    opt.textContent = st.station + " (current)";
+                    ss.appendChild(opt);
+                }
+                if (st && st.mode === "manual" && st.station) ss.value = st.station;
+            } catch (e) {}
+        }
+
+        async function loadOutputs(rescan) {
+            try {
+                const res = await fetch("/api/atc/outputs" + (rescan ? "?rescan=1" : ""));
+                const data = await res.json();
+                const os = document.getElementById("output-select");
+                os.innerHTML = "";
+                // This fork has no /display browser mirror — hide "browser".
+                const outs = (data.outputs || []).filter(o => o.type !== "browser");
+                for (const o of outs) {
+                    const opt = document.createElement("option");
+                    opt.value = o.id;
+                    opt.textContent = o.name + (o.type !== "usb" ? ` (${o.type})` : "");
+                    os.appendChild(opt);
+                }
+                if (st && st.output &&
+                        os.querySelector(`option[value="${CSS.escape(st.output)}"]`))
+                    os.value = st.output;
+            } catch (e) {}
+        }
+
+        async function pairAirplay() {
+            const out = document.getElementById("output-select").value;
+            if (!out.startsWith("airplay")) return;
+            const status = document.getElementById("pair-status");
+            status.textContent = "Contacting receiver…";
+            try {
+                let res = await fetch("/api/atc/airplay/pair", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ output: out })
+                });
+                let data = await res.json();
+                while (data.stage === "starting" || data.stage === "working") {
+                    await new Promise(r => setTimeout(r, 2000));
+                    res = await fetch("/api/atc/airplay/pair", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ status: true })
+                    });
+                    data = await res.json();
+                }
+                while (data.stage === "awaiting_pin") {
+                    const pin = prompt(
+                        `Enter the PIN shown on the receiver (${data.protocol || "AirPlay"}):`);
+                    if (pin == null) {
+                        await fetch("/api/atc/airplay/pair", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ cancel: true })
+                        });
+                        status.textContent = "Pairing cancelled.";
+                        return;
+                    }
+                    res = await fetch("/api/atc/airplay/pair", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ pin: pin })
+                    });
+                    data = await res.json();
+                }
+                status.textContent = data.stage === "paired"
+                    ? "Paired ✓" : ("Pairing failed: " + (data.error || "unknown"));
+            } catch (e) {
+                status.textContent = "Pairing failed — connection error.";
+            }
+            refresh();
+        }
+
+        document.addEventListener("DOMContentLoaded", async () => {
+            await refresh();
+            loadStations();
+            loadOutputs(false);
+            refreshTimer = setInterval(refresh, 5000);
+        });
+    </script>
+</body>
+</html>

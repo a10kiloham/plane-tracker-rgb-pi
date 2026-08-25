@@ -243,6 +243,25 @@ def safe_write_json(path: str, data):
             logger.error(f"Cannot write {path}: {e2}")
 
 
+def write_current_overhead(overhead_data):
+    """Publish a compact snapshot of the current overhead flights to
+    current_overhead.json. Read by utilities/atc_audio.py to auto-tune the
+    LiveATC feed to the airport most relevant to overhead traffic."""
+    try:
+        safe_write_json(
+            os.path.join(DATA_DIR, "current_overhead.json"),
+            [{"callsign": e.get("callsign", ""),
+              "lat": e.get("plane_latitude"),
+              "lon": e.get("plane_longitude"),
+              "altitude": e.get("altitude", 0),
+              "distance": e.get("distance"),
+              "origin": e.get("origin", ""),
+              "destination": e.get("destination", "")}
+             for e in overhead_data])
+    except Exception:
+        pass
+
+
 def ordinal(n: int):
     return f"{n}{'tsnrhtdd'[(n//10 % 10 != 1) * (n % 10 < 4) * n % 10::4]}"
 
@@ -1437,6 +1456,9 @@ class Overhead:
                 pass
             except Exception as e:
                 logger.debug(f"ISS pass data fetch failed: {e}")
+
+            # --- ATC audio: compact overhead snapshot (see write_current_overhead) ---
+            write_current_overhead(overhead_data)
 
             # --- Pipeline Summary ---
             stats["elapsed_ms"] = (time() - _grab_start) * 1000
