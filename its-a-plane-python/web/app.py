@@ -1,7 +1,8 @@
 #!/usr/bin/python3
-from flask import Flask, render_template, jsonify, send_from_directory, request
+from flask import Flask, Response, render_template, jsonify, send_from_directory, request
 import json
 import os
+import re
 import subprocess
 import sys
 import time as _time
@@ -378,13 +379,22 @@ def airport_code():
     return jsonify(result)
 
 
-@app.post("/api/airlines")
+@app.route("/api/airlines", methods=["GET", "POST"])
 def api_airlines():
-    """Batch-resolve ICAO airline prefixes to names.
+    """Resolve ICAO airline prefixes to names.
 
     POST JSON: {"codes": ["UAL", "AAL", "DAL"]}
     Returns: {"UAL": "United Airlines", "AAL": "American Airlines", ...}
+
+    GET (no params): the full airlines.json lookup table (used by the
+    stats pages, which need arbitrary prefixes).
     """
+    if request.method == "GET":
+        try:
+            with open(os.path.join(BASE_DIR, "airlines.json"), "r", encoding="utf-8") as f:
+                return jsonify(json.load(f))
+        except Exception:
+            return jsonify({})
     try:
         from utilities.airlines import get_airline_name
     except ImportError:
@@ -399,24 +409,32 @@ def api_airlines():
     return jsonify(result)
 
 
-@app.post("/api/airport-coords")
+@app.route("/api/airport-coords", methods=["GET", "POST"])
 def api_airport_coords():
     """Batch-resolve airport codes to coordinates.
 
     POST JSON: {"codes": ["JFK", "LAX", "CDG"]}
-    Returns: {"JFK": {"lat": 40.64, "lon": -73.78}, ...}
+    GET:       /api/airport-coords?codes=JFK,LAX,CDG
+    Returns: {"JFK": {"lat": 40.64, "lon": -73.78, "name": ""}, ...}
     """
     try:
         from utilities.airports import get_airport_coords
     except ImportError:
         return jsonify({})
-    data = request.get_json(force=True) or {}
-    codes = data.get("codes", [])
+    if request.method == "GET":
+        codes = [c.strip() for c in request.args.get("codes", "").split(",")]
+    else:
+        data = request.get_json(force=True) or {}
+        codes = data.get("codes", [])
     result = {}
     for code in codes[:200]:  # cap at 200
+        code = (code or "").strip().upper()
+        if not code:
+            continue
         coords = get_airport_coords(code)
         if coords:
-            result[code] = coords
+            result[code] = {"lat": coords.get("lat"), "lon": coords.get("lon"),
+                            "name": coords.get("name", "")}
     return jsonify(result)
 
 
@@ -439,8 +457,14 @@ def api_aircraft_types():
         return jsonify({})
 
 
-# Flight counter and stats (concept from c0wsaysmoo/plane-tracker-rgb-pi)
-from utilities.overhead import COUNTER_FILE
+# Flight counter, stats and blocklist (concept from c0wsaysmoo/plane-tracker-rgb-pi)
+from utilities import overhead as _overhead
+from utilities.overhead import (
+    COUNTER_FILE,
+    ROUTE_AUDIT_LOG,
+    load_blocklist,
+    safe_write_json,
+)
 
 
 @app.get("/counter")
@@ -506,41 +530,59 @@ def config_page():
     return render_template("config.html")
 
 
+def _mask_secret(val):
+    """Mask an API key: show first 4 and last 4 chars only."""
+    if not val:
+        return ""
+    if len(val) > 10:
+        return val[:4] + "*" * (len(val) - 8) + val[-4:]
+    return "****"
+
+
 @app.get("/api/config")
 def api_config_get():
-    """Return current config as JSON. Masks secret values."""
+    """Read-only view of the current (env-var-sourced) config.
+
+    Config in this fork comes exclusively from environment variables
+    (/etc/plane-tracker.env or .env) — there is no web config editor.
+    Secrets are masked. Also exposes a small nested `config.location`
+    block in the shape the stats templates expect.
+    """
     import config as cfg
 
-    SECRET_KEYS = {"FR24_API_KEY", "TOMORROW_API_KEY", "AIRLABS_API_KEY", "NPS_API_KEY", "OWM_API_KEY"}
+    SECRET_KEYS = {"FR24_API_KEY", "TOMORROW_API_KEY", "AIRLABS_API_KEY"}
 
-    result = {}
-    # Flat env-style keys the UI expects
+    result = {"config_source": "environment"}
     for key in [
         "HOME_LAT", "HOME_LON",
         "ZONE_TL_LAT", "ZONE_TL_LON", "ZONE_BR_LAT", "ZONE_BR_LON",
-        "JOURNEY_CODE_SELECTED", "TEMPERATURE_LOCATION", "TIDE_STATION",
-        "WATER_TEMP_STATION", "AIRPORT_STATUS_LIST",
+        "JOURNEY_CODE_SELECTED", "TEMPERATURE_LOCATION",
         "DISTANCE_UNITS", "SPEED_UNITS", "TEMPERATURE_UNITS", "CLOCK_FORMAT",
-        "BRIGHTNESS", "BRIGHTNESS_NIGHT", "GPIO_SLOWDOWN", "LED_RGB_SEQUENCE",
+        "BRIGHTNESS", "BRIGHTNESS_NIGHT", "GPIO_SLOWDOWN",
         "NIGHT_BRIGHTNESS", "NIGHT_START", "NIGHT_END", "HAT_PWM_ENABLED",
-        "MIN_ALTITUDE", "JOURNEY_BLANK_FILLER", "FORECAST_DAYS", "BLOCKED_CALLSIGNS",
-        "NWS_ALERTS_ENABLED", "ISS_ALERTS_ENABLED",
+        "MIN_ALTITUDE", "JOURNEY_BLANK_FILLER", "FORECAST_DAYS",
         "MAX_CLOSEST", "MAX_FARTHEST", "STATS_LOG_DAYS",
-        "FR24_API_KEY", "TOMORROW_API_KEY", "AIRLABS_API_KEY", "NPS_API_KEY", "OWM_API_KEY",
-        "EMAIL",
+        "FR24_API_KEY", "TOMORROW_API_KEY", "AIRLABS_API_KEY",
+        "EMAIL", "SERVICE_NAME", "PLANE_TRACKER_DATA_DIR",
     ]:
-        # Return resolved booleans for checkbox fields
-        if key in {"NIGHT_BRIGHTNESS", "HAT_PWM_ENABLED", "NWS_ALERTS_ENABLED", "ISS_ALERTS_ENABLED"}:
-            result[key] = getattr(cfg, key, False)
-            continue
-        val = cfg._get(key)
-        if key in SECRET_KEYS and val:
-            # Mask: show first 4 and last 4 chars
-            if len(val) > 10:
-                val = val[:4] + "*" * (len(val) - 8) + val[-4:]
-            else:
-                val = "****"
+        val = getattr(cfg, key, None)
+        if val is None:
+            val = os.environ.get(key, "")
+        if key in SECRET_KEYS:
+            val = _mask_secret(val)
         result[key] = val
+
+    # Nested block in the shape the stats templates read
+    try:
+        result["config"] = {
+            "location": {
+                "distance_units": cfg.DISTANCE_UNITS,
+                "location_home": list(cfg.LOCATION_HOME),
+                "zone_home": dict(cfg.ZONE_HOME),
+            }
+        }
+    except Exception:
+        result["config"] = {}
 
     # Populate computed zone/location fields if not already set
     for key, fallback in [
@@ -557,86 +599,15 @@ def api_config_get():
     return jsonify(result)
 
 
-_VALID_CONFIG_KEYS = {
-    "HOME_LAT", "HOME_LON",
-    "ZONE_TL_LAT", "ZONE_TL_LON", "ZONE_BR_LAT", "ZONE_BR_LON",
-    "JOURNEY_CODE_SELECTED", "TEMPERATURE_LOCATION", "TIDE_STATION",
-    "WATER_TEMP_STATION", "AIRPORT_STATUS_LIST",
-    "DISTANCE_UNITS", "SPEED_UNITS", "TEMPERATURE_UNITS", "CLOCK_FORMAT",
-    "BRIGHTNESS", "BRIGHTNESS_NIGHT", "GPIO_SLOWDOWN", "LED_RGB_SEQUENCE",
-    "NIGHT_BRIGHTNESS", "NIGHT_START", "NIGHT_END", "HAT_PWM_ENABLED",
-    "MIN_ALTITUDE", "JOURNEY_BLANK_FILLER", "FORECAST_DAYS", "BLOCKED_CALLSIGNS",
-    "NWS_ALERTS_ENABLED", "ISS_ALERTS_ENABLED",
-    "MAX_CLOSEST", "MAX_FARTHEST", "STATS_LOG_DAYS",
-    "FR24_API_KEY", "TOMORROW_API_KEY", "AIRLABS_API_KEY", "NPS_API_KEY", "OWM_API_KEY",
-    "EMAIL",
-}
-
-
-@app.post("/api/config")
-def api_config_post():
-    """Save config to config/config.json and reload."""
-    import config as cfg
-
-    data = request.get_json(force=True)
-    if not data or not isinstance(data, dict):
-        return jsonify({"error": "Invalid JSON payload"}), 400
-
-    # Allowlist: only accept known config keys
-    data = {k: v for k, v in data.items() if k in _VALID_CONFIG_KEYS}
-    if not data:
-        return jsonify({"error": "No valid config keys provided"}), 400
-
-    # Ensure config directory exists
-    config_dir = os.path.join(BASE_DIR, "config")
-    os.makedirs(config_dir, exist_ok=True)
-
-    config_path = os.path.join(config_dir, "config.json")
-
-    # Load existing JSON config to merge (preserve keys not sent)
-    existing = {}
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-        except Exception:
-            pass
-
-    # Merge new values
-    existing.update(data)
-
-    # Atomic write: write to tmp then rename
-    tmp_path = config_path + ".tmp"
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(existing, f, indent=2)
-        os.replace(tmp_path, config_path)
-        try:
-            os.chmod(config_path, 0o666)
-        except OSError:
-            pass
-    except Exception as e:
-        return jsonify({"error": f"Write failed: {e}"}), 500
-
-    # Reload config module
-    try:
-        cfg.reload()
-    except Exception as e:
-        return jsonify({"error": f"Saved but reload failed: {e}"}), 500
-
-    return jsonify({"status": "ok", "source": cfg.config_source()})
+# NOTE: there is deliberately no POST /api/config. Config in this fork is
+# sourced exclusively from environment variables (/etc/plane-tracker.env or
+# .env) — the web UI only displays it read-only.
 
 
 @app.get("/api/system")
 def api_system():
     """System status: uptime, CPU temp."""
-    info = {"uptime": "", "cpu_temp": "", "config_source": "env"}
-
-    try:
-        import config as cfg
-        info["config_source"] = cfg.config_source()
-    except Exception:
-        pass
+    info = {"uptime": "", "cpu_temp": "", "config_source": "environment"}
 
     # Uptime (Linux)
     try:
@@ -847,6 +818,183 @@ def wifi_connect():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ---- ISS endpoints (optional — utilities.iss may not exist; degrade to null) ----
+
+@app.get("/api/iss-position")
+def iss_position():
+    """Current ISS sub-satellite point for the route maps. {lat, lon, alt_km} or null."""
+    try:
+        from utilities.iss import get_iss_position
+        return jsonify(get_iss_position())
+    except Exception:
+        return jsonify(None)
+
+
+@app.get("/api/iss-passes")
+def iss_passes():
+    """Upcoming ISS passes over the home location, for the stats page."""
+    try:
+        from utilities.iss import get_iss_passes
+        return jsonify(get_iss_passes())
+    except Exception:
+        return jsonify(None)
+
+
+@app.get("/api/iss-groundtrack")
+def iss_groundtrack():
+    """ISS ground track for the route maps. {points, current_index} or null."""
+    try:
+        from utilities.iss import get_iss_groundtrack
+        return jsonify(get_iss_groundtrack())
+    except Exception:
+        return jsonify(None)
+
+
+# ---- Log viewers (concept from c0wsaysmoo/plane-tracker-rgb-pi) ----
+
+@app.get("/logs-hub")
+def logs_hub():
+    return render_template("logs_hub.html")
+
+
+@app.get("/closest/log")
+def closest_log_page():
+    return render_template("log_viewer.html", title="CLOSEST FLIGHT LOGS",
+                           mode="flights", data_url="/closest/json")
+
+
+@app.get("/farthest/log")
+def farthest_log_page():
+    return render_template("log_viewer.html", title="FARTHEST FLIGHTS LOGS",
+                           mode="flights", data_url="/farthest/json")
+
+
+@app.get("/counter/log")
+def counter_log_page():
+    return render_template("log_viewer.html", title="FLIGHT COUNTER LOG",
+                           mode="counter", data_url="/counter")
+
+
+@app.get("/route-audit")
+def route_audit_page():
+    """Route audit log — every processed flight with its route source.
+
+    Our adaptation of upstream's API call log (this fork logs pipeline
+    activity to route_audit.log instead of api_calls.log).
+    """
+    return render_template("log_viewer.html", title="ROUTE AUDIT LOG",
+                           mode="apicalls", data_url="/route-audit/raw")
+
+
+@app.get("/route-audit/raw")
+def route_audit_raw():
+    """Tail of route_audit.log as plain text (most recent 2000 lines)."""
+    try:
+        with open(ROUTE_AUDIT_LOG, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        return Response("".join(lines[-2000:]), mimetype="text/plain")
+    except OSError:
+        return Response("", mimetype="text/plain")
+
+
+@app.get("/logs")
+def logs_page():
+    return render_template("logs.html")
+
+
+@app.get("/api/logs")
+def api_logs():
+    """Recent journalctl lines for the tracker service (SERVICE_NAME env)."""
+    service = os.environ.get("SERVICE_NAME", "flight-tracker")
+    since = request.args.get("since", "")
+    n = request.args.get("n", "500")
+    if not re.match(r"^\d{1,5}$", n):
+        n = "500"
+    try:
+        cmd = ["journalctl", "-u", f"{service}.service", "--no-pager", "-o", "short-iso"]
+        if since:
+            cmd += ["--since", since]
+        else:
+            cmd += ["-n", n]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return jsonify({"lines": result.stdout.splitlines(), "error": None})
+    except Exception as e:
+        return jsonify({"lines": [], "error": str(e)})
+
+
+@app.get("/api/service-file")
+def api_service_file():
+    """Contents of the tracker's systemd service file (for log-config hints)."""
+    service = os.environ.get("SERVICE_NAME", "flight-tracker")
+    path = f"/etc/systemd/system/{service}.service"
+    try:
+        with open(path, "r") as f:
+            return jsonify({"content": f.read(), "path": path, "error": None})
+    except Exception as e:
+        return jsonify({"content": None, "path": path, "error": str(e)})
+
+
+# ---- Plane blocklist (concept from c0wsaysmoo/plane-tracker-rgb-pi 128d3d3) ----
+
+_BLOCK_TYPES = {"callsigns", "registrations"}
+# Callsigns may end with "*" for prefix matching; registrations may not.
+_BLOCK_CALLSIGN_RE = re.compile(r"^[A-Z0-9-]{2,10}\*?$")
+_BLOCK_REG_RE = re.compile(r"^[A-Z0-9-]{2,10}$")
+
+
+def _validate_block_entry(kind, value):
+    """Return (normalized_value, error_message_or_None)."""
+    value = (value or "").strip().upper()
+    if kind not in _BLOCK_TYPES:
+        return value, "type must be 'callsigns' or 'registrations'"
+    pattern = _BLOCK_CALLSIGN_RE if kind == "callsigns" else _BLOCK_REG_RE
+    if not pattern.match(value):
+        return value, ("2-10 letters/digits" +
+                       (", optionally ending in * for prefix match" if kind == "callsigns" else ""))
+    return value, None
+
+
+@app.get("/blocklist")
+def blocklist_page():
+    return render_template("blocklist.html")
+
+
+@app.get("/blocklist/json")
+def blocklist_json():
+    return jsonify(load_blocklist())
+
+
+@app.post("/blocklist/add")
+def blocklist_add():
+    data = request.get_json(force=True) or {}
+    kind = (data.get("type") or "").strip()
+    value, err = _validate_block_entry(kind, data.get("value"))
+    if err:
+        return jsonify({"error": err}), 400
+    current = load_blocklist()
+    if value in current[kind]:
+        return jsonify({"message": f"{value} already blocked", **current})
+    current[kind].append(value)
+    current[kind].sort()
+    safe_write_json(_overhead.BLOCKLIST_FILE, current)
+    return jsonify({"message": f"Blocked {value}", **load_blocklist()})
+
+
+@app.post("/blocklist/remove")
+def blocklist_remove():
+    data = request.get_json(force=True) or {}
+    kind = (data.get("type") or "").strip()
+    value = (data.get("value") or "").strip().upper()
+    if kind not in _BLOCK_TYPES:
+        return jsonify({"error": "type must be 'callsigns' or 'registrations'"}), 400
+    current = load_blocklist()
+    if value not in current[kind]:
+        return jsonify({"error": f"{value} is not in the blocklist"}), 404
+    current[kind] = [v for v in current[kind] if v != value]
+    safe_write_json(_overhead.BLOCKLIST_FILE, current)
+    return jsonify({"message": f"Unblocked {value}", **load_blocklist()})
 
 
 if __name__ == "__main__":
