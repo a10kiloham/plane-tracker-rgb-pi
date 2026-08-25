@@ -69,6 +69,12 @@ _raw_filler = os.environ.get("JOURNEY_BLANK_FILLER", "").strip()
 JOURNEY_BLANK_FILLER = f" {_raw_filler} " if _raw_filler else " ? "
 SPEED_UNITS = os.environ.get("SPEED_UNITS", "metric")
 
+# --- Flyover context (landmarks / oceans / national parks) ---
+# When enabled, the tracked-flight stats line shows a US National Park the
+# aircraft is over, or the body of water when far from any city, instead of
+# always the nearest city.
+LANDMARKS_ENABLED = _bool(os.environ.get("LANDMARKS_ENABLED", "False"))
+
 # --- Logging & notifications ---
 EMAIL = os.environ.get("EMAIL", "")
 MAX_FARTHEST = int(os.environ.get("MAX_FARTHEST", "3"))
