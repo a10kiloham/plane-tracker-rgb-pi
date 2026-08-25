@@ -997,5 +997,324 @@ def blocklist_remove():
     return jsonify({"message": f"Unblocked {value}", **load_blocklist()})
 
 
+# ---- ATC radio (LiveATC audio auto-tuned to overhead traffic) ----
+# Ported from ajplotkin/atc-audio. Reads current_overhead.json (written by
+# utilities/overhead.py). Clients pull the LiveATC stream directly — nothing
+# is proxied or rebroadcast here; the sole exception is the local-only
+# /atc/relay below, which exists for this household's own players.
+
+import threading as _threading
+
+
+def _atc():
+    """Lazily get the ATC audio manager singleton (never fails hard)."""
+    from utilities.atc_audio import get_manager
+    return get_manager()
+
+
+@app.get("/atc")
+def atc_page():
+    return render_template("atc.html")
+
+
+@app.get("/api/atc/status")
+def atc_status():
+    try:
+        return jsonify(_atc().status())
+    except Exception as e:
+        return jsonify({"error": str(e), "enabled": False, "mode": "off"}), 200
+
+
+@app.get("/api/atc/outputs")
+def atc_outputs():
+    """Unified output discovery: [{id, name, type}]. ?rescan=1 forces a fresh
+    mDNS/AirPlay scan."""
+    try:
+        force = request.args.get("rescan") in ("1", "true", "yes")
+        return jsonify({"outputs": _atc().list_outputs(force_rescan=force)})
+    except Exception as e:
+        return jsonify({"outputs": [
+            {"id": "usb", "name": "Pi USB speaker", "type": "usb"},
+        ], "error": str(e)})
+
+
+@app.get("/api/atc/stations")
+def atc_stations():
+    """Full station list; ?nearby=1 returns distance-ordered airport/feed
+    groups (passive — never probes) for building selector UIs."""
+    try:
+        if request.args.get("nearby") in ("1", "true", "yes"):
+            return jsonify({"nearby": _atc().nearby_stations()})
+        return jsonify({"stations": _atc().stations()})
+    except Exception as e:
+        return jsonify({"stations": [], "nearby": [], "error": str(e)})
+
+
+@app.post("/api/atc/start")
+def atc_start():
+    try:
+        return jsonify(_atc().start())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/atc/stop")
+def atc_stop():
+    try:
+        return jsonify(_atc().stop())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/atc/mode")
+def atc_mode():
+    data = request.get_json(force=True) or {}
+    mode = (data.get("mode") or "").strip().lower()
+    try:
+        return jsonify(_atc().set_mode(mode))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/atc/station")
+def atc_station():
+    data = request.get_json(force=True) or {}
+    try:
+        return jsonify(_atc().set_station(data.get("station", "")))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/atc/volume")
+def atc_volume():
+    data = request.get_json(force=True) or {}
+    try:
+        return jsonify(_atc().set_volume(data.get("volume", 70)))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# Cap concurrent relay streams: each holds a Flask worker thread plus an
+# ffmpeg fetching LiveATC for its whole life — unbounded clients could
+# exhaust the thread pool, and a burst of upstream fetches from one IP is
+# exactly the pattern LiveATC's edges ban.
+_RELAY_SEMAPHORE = _threading.Semaphore(4)
+
+
+@app.get("/atc/relay")
+def atc_relay():
+    """LOCAL-ONLY stream fetch adapter. pyatv (AirPlay) cannot set a
+    User-Agent and LiveATC's edges 403 library UAs — so the Pi's own players
+    fetch through here, which adds a browser UA. This is NOT a rebroadcast:
+    loopback (pyatv/AirPlay) and private-LAN clients (Chromecast pulls the
+    relay instead of hitting LiveATC with its own UA from the house IP) are
+    allowed; anything global is refused — the relay serves this household's
+    own receivers, it is not an internet rebroadcast.
+    ?fmt=raw skips the WAV transcode and proxies the source MP3 untouched
+    (cast devices decode live MP3 natively; only pyatv needs WAV)."""
+    import ipaddress as _ipa
+    try:
+        _ip = _ipa.ip_address(request.remote_addr)
+        _ok = _ip.is_loopback or _ip.is_private
+    except ValueError:
+        _ok = False
+    if not _ok:
+        return jsonify({"error": "local clients only"}), 403
+    import re as _re
+    # fullmatch beats .replace("_","").isalnum(): isalnum() accepts arbitrary
+    # Unicode letters/digits, which landed verbatim in an ffmpeg URL. Mounts
+    # are plain ASCII [a-z0-9_]; cap length as a backstop.
+    code = (request.args.get("code") or "").strip()[:64]
+    if not code or not _re.fullmatch(r"[a-z0-9_]+", code, _re.IGNORECASE):
+        return jsonify({"error": "bad code"}), 400
+    fmt = (request.args.get("fmt") or "").strip()
+    ua = ("Mozilla/5.0 (X11; Linux armv7l) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+    import shutil as _sh
+    # One semaphore slot per live response, held for its whole life: the
+    # generators release it in their finally (Werkzeug close()s the response
+    # iterable even on client abort, so the finally always runs).
+    if not _RELAY_SEMAPHORE.acquire(timeout=2):
+        return jsonify({"error": "relay busy"}), 503
+    try:
+        # -rw_timeout (µs) on both ffmpeg fetches: a stalled upstream edge
+        # otherwise blocks the worker thread + ffmpeg pair forever.
+        if fmt == "mp3" and _sh.which("ffmpeg"):
+            # Cast path: re-encode the 16 kbps trickle to 128 kbps MP3. Identical
+            # audio, 8x the bytes — the Chromecast receiver's startup buffer fills
+            # in seconds instead of the better part of a minute.
+            proc = subprocess.Popen(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-rw_timeout", "15000000",
+                 "-user_agent", ua, "-i", f"https://d.liveatc.net/{code}",
+                 "-vn", "-acodec", "libmp3lame", "-b:a", "128k",
+                 "-ar", "44100", "-ac", "2",
+                 "-map_metadata", "-1", "-bitexact",
+                 "-f", "mp3", "-"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+            def gen():
+                try:
+                    while True:
+                        chunk = proc.stdout.read(8192)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    _RELAY_SEMAPHORE.release()
+            return Response(gen(), content_type="audio/mpeg")
+        if fmt != "raw" and _sh.which("ffmpeg"):
+            # Transcode to WAV: pyatv/miniaudio cannot INIT its decoder on a
+            # trickling live MP3 (16 kbps = seconds per frame-sniff buffer), but
+            # WAV inits from a 44-byte header. Verified: local MP3 file streams
+            # fine, live MP3 URL fails init, WAV flows. Loopback-only, so the
+            # ~1.4 Mbps PCM never leaves the Pi; CPU cost of decoding 16 kbps
+            # mono is negligible.
+            # -map_metadata -1 -bitexact is REQUIRED: without it ffmpeg inserts a
+            # LIST/INFO chunk between fmt and data; dr_wav skips chunks via
+            # seek-from-CURRENT, which pyatv's live source can't do, so the parser
+            # degenerates into an endless 4-byte scan of the stream — a healthy
+            # AirPlay session playing eternal silence (root-caused 2026-07-02).
+            proc = subprocess.Popen(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-rw_timeout", "15000000",
+                 "-user_agent", ua, "-i", f"https://d.liveatc.net/{code}",
+                 "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
+                 "-map_metadata", "-1", "-bitexact",
+                 "-f", "wav", "-"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+            def gen():
+                # On a pipe ffmpeg writes 0xFFFFFFFF for the RIFF and data chunk
+                # sizes (can't seek back to patch them). dr_wav then reads to EOF
+                # during INIT to learn the frame count — which never comes on a
+                # live stream. Rewrite both fields to a real, huge size (2 GB ≈
+                # 3.4 h of PCM); the AirPlay reconnect loop covers the rollover.
+                import struct as _st
+                data_size = 0x7FFF0000
+                try:
+                    head = proc.stdout.read(44)
+                    if not (len(head) == 44 and head[:4] == b"RIFF"
+                            and head[36:40] == b"data"):
+                        # Not the canonical 44-byte header (LIST chunk snuck
+                        # in, or ffmpeg died and the read came back short or
+                        # empty). Streaming it UN-patched hands pyatv the
+                        # eternal-silence parser bug this rewrite exists to
+                        # prevent — abort loudly instead; the client gets a
+                        # short body and its reconnect loop retries.
+                        print(f"ATC relay: unexpected WAV header from ffmpeg "
+                              f"for '{code}' (len={len(head)}) — aborting "
+                              f"stream", flush=True)
+                        return
+                    head = (head[:4] + _st.pack("<I", 36 + data_size)
+                            + head[8:40] + _st.pack("<I", data_size))
+                    yield head
+                    while True:
+                        chunk = proc.stdout.read(8192)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    _RELAY_SEMAPHORE.release()
+            return Response(gen(), content_type="audio/wav")
+        import requests as _rq
+        up = _rq.get(f"https://d.liveatc.net/{code}", stream=True, timeout=10,
+                     headers={"User-Agent": ua})
+
+        def gen():
+            try:
+                for chunk in up.iter_content(8192):
+                    yield chunk
+            finally:
+                up.close()
+                _RELAY_SEMAPHORE.release()
+        return Response(gen(), status=up.status_code,
+                        content_type=up.headers.get("Content-Type", "audio/mpeg"))
+    except BaseException:
+        # Failed before a generator took ownership of the slot (e.g. the
+        # upstream GET raised) — release here or the slot leaks.
+        _RELAY_SEMAPHORE.release()
+        raise
+
+
+@app.post("/api/atc/airplay/pair")
+def atc_airplay_pair():
+    """One-time pairing for AirPlay devices that ask for a code:
+    {output: id} begins (device shows PIN) -> {pin: "1234"} finishes;
+    {cancel: true} aborts."""
+    data = request.get_json(force=True) or {}
+    try:
+        if data.get("cancel"):
+            return jsonify(_atc().airplay_pair_cancel())
+        if data.get("status"):
+            return jsonify(_atc().airplay_pair_status())
+        if data.get("pin"):
+            return jsonify(_atc().airplay_pair_finish(data["pin"]))
+        out = (data.get("output") or "").strip()
+        if not out:
+            return jsonify({"ok": False, "error": "output required"}), 400
+        return jsonify(_atc().airplay_pair_begin(out))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/api/atc/select-output")
+def atc_select_output():
+    data = request.get_json(force=True) or {}
+    out = (data.get("output") or "").strip()
+    if not out:
+        return jsonify({"error": "output required"}), 400
+    try:
+        return jsonify(_atc().select_output(out))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ATC auto-tune background thread — advances the auto-tuner off the LED display
+# hot loop. Reads current_overhead.json; spawns/tears down Pi-side audio
+# backends (mpv/Chromecast/AirPlay) only when a non-browser output is playing.
+_atc_ticker_started = False
+
+
+def _start_atc_ticker():
+    global _atc_ticker_started
+    if _atc_ticker_started:
+        return
+    _atc_ticker_started = True
+
+    def _loop():
+        while True:
+            try:
+                _atc().tick()
+            except Exception:
+                pass
+            _time.sleep(5)
+
+    try:
+        t = _threading.Thread(target=_loop, name="atc-ticker", daemon=True)
+        t.start()
+    except Exception:
+        pass
+
+
+# Start at import time (the Docker image does `from web.app import app`, so
+# __main__ never runs there) — but only when the feature is enabled: with
+# ATC_ENABLED false the manager is never even instantiated.
+try:
+    from config import ATC_ENABLED as _ATC_ENABLED
+except Exception:
+    _ATC_ENABLED = False
+if _ATC_ENABLED:
+    _start_atc_ticker()
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=False)

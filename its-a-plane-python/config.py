@@ -85,6 +85,38 @@ LANDMARKS_ENABLED = _bool(os.environ.get("LANDMARKS_ENABLED", "False"))
 # Requires the optional `ephem` package; uses LOCATION_HOME as the observer.
 ISS_ENABLED = _bool(os.environ.get("ISS_ENABLED", "False"))
 
+# --- ATC audio (LiveATC.net streaming, auto-tuned to overhead traffic) ---
+# Master switch — everything below is inert unless this is True.
+ATC_ENABLED = _bool(os.environ.get("ATC_ENABLED", "False"))
+# Initial mode on first run: "auto" (follow overhead traffic), "manual"
+# (stay on ATC_STATION), or "off" (wait for an explicit start via the web
+# UI / HomeKit). Runtime changes persist in the data dir and win thereafter.
+ATC_MODE = os.environ.get("ATC_MODE", "auto")
+# Initial LiveATC mount for manual mode (e.g. "kjfk_twr"); blank = auto-pick.
+ATC_STATION = os.environ.get("ATC_STATION", "")
+# Initial audio output: "usb" (mpv -> USB speaker on the Pi),
+# "chromecast:<uuid>" / "airplay:<id>" (pick ids from /api/atc/outputs),
+# or "browser" (a browser client plays the stream itself).
+ATC_OUTPUT = os.environ.get("ATC_OUTPUT", "usb")
+# Initial volume 0-100.
+ATC_VOLUME = int(os.environ.get("ATC_VOLUME", "70"))
+# Quiet window during which auto mode never starts audio ("HH:MM" each).
+# Leave both blank to use NIGHT_START/NIGHT_END.
+_atc_qs = os.environ.get("ATC_QUIET_START", "").strip()
+_atc_qe = os.environ.get("ATC_QUIET_END", "").strip()
+ATC_QUIET_HOURS = f"{_atc_qs}-{_atc_qe}" if _atc_qs and _atc_qe else ""
+# Resume a Pi-side output (usb/cast/airplay) after a service restart.
+ATC_AUTO_RESUME = _bool(os.environ.get("ATC_AUTO_RESUME", "True"))
+# mpv --audio-device override, e.g. "alsa/plughw:CARD=UACDemoV10,DEV=0";
+# blank = auto-detect the first USB-audio card.
+ATC_USB_DEVICE = os.environ.get("ATC_USB_DEVICE", "")
+# Extra/corrected LiveATC feeds: comma list of "ICAO/kind/mount[/lat/lon]"
+# (kind: twr|app|ctr), merged over the built-in station seed.
+ATC_CUSTOM_FEEDS = os.environ.get("ATC_CUSTOM_FEEDS", "")
+# Port the web app (and its loopback /atc/relay) listens on — 8080 under
+# systemd, 6969 in the Docker image.
+ATC_RELAY_PORT = int(os.environ.get("ATC_RELAY_PORT", "8080"))
+
 # --- Logging & notifications ---
 EMAIL = os.environ.get("EMAIL", "")
 MAX_FARTHEST = int(os.environ.get("MAX_FARTHEST", "3"))
