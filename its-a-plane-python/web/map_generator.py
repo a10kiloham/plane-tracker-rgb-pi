@@ -43,12 +43,30 @@ def align_to_reference_tile(lon, ref_lon):
         lon += 360
     return lon
 
+def add_iss_marker(m):
+    """Add the current ISS ground-track position to a map (best effort).
+
+    No-op when ISS_ENABLED is off, ephem is missing, or no TLE is cached.
+    """
+    try:
+        from utilities.iss import get_iss_position
+        pos = get_iss_position()
+        if pos:
+            folium.Marker(
+                [pos["lat"], pos["lon"]],
+                popup=f"ISS ({pos['alt_km']:.0f} km)",
+                icon=folium.Icon(color="gray", icon="star"),
+            ).add_to(m)
+    except Exception:
+        pass
+
 def generate_closest_map(entries, filename="closest.html"):
     m = folium.Map(location=LOCATION_HOME[:2], zoom_start=10)
     unit_label = get_unit_label()
     colors = ["red","blue","green","purple","pink","darkred","darkblue","darkgreen","cadetblue","brown"]
 
     folium.Marker(LOCATION_HOME[:2], popup="Home", icon=folium.Icon(color="orange")).add_to(m)
+    add_iss_marker(m)
     all_locs = [LOCATION_HOME[:2]]
 
     for idx, entry in enumerate(entries):
@@ -85,6 +103,7 @@ def generate_farthest_map(entries, filename="farthest.html"):
 
     m = folium.Map(location=LOCATION_HOME[:2], zoom_start=4)
     folium.Marker(LOCATION_HOME[:2], popup="Home", icon=folium.Icon(color="orange")).add_to(m)
+    add_iss_marker(m)
 
     all_locs = [LOCATION_HOME[:2]]
     ref_lon = None
