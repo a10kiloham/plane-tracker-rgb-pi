@@ -81,6 +81,10 @@ HOURLY_CHIME_QUIET_END = os.environ.get("HOURLY_CHIME_QUIET_END", "08:00")
 # always the nearest city.
 LANDMARKS_ENABLED = _bool(os.environ.get("LANDMARKS_ENABLED", "False"))
 
+# --- ISS overhead passes ---
+# Requires the optional `ephem` package; uses LOCATION_HOME as the observer.
+ISS_ENABLED = _bool(os.environ.get("ISS_ENABLED", "False"))
+
 # --- Logging & notifications ---
 EMAIL = os.environ.get("EMAIL", "")
 MAX_FARTHEST = int(os.environ.get("MAX_FARTHEST", "3"))

@@ -38,7 +38,7 @@ class TrackedProgressScene(object):
 
     @Animator.KeyFrame.add(1)
     def tracked_progress(self, count):
-        if len(self._data) > 0:
+        if len(self._data) > 0 or getattr(self, "_iss_active", False):
             return
 
         tracked = self.overhead.tracked_data
