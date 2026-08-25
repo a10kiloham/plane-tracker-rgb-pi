@@ -105,6 +105,7 @@
             <button class="clear" onclick="clearTracked()">Clear</button>
         </div>
         <div id="track-status"></div>
+        <div id="flight-picker" style="display:none; flex-direction:column; gap:6px; margin-top:10px;"></div>
         <div class="confirm-row" id="confirm-row">
             <button class="btn-save" onclick="saveAnyway()">Save anyway</button>
             <button class="btn-cancel" onclick="cancelSave()">Cancel</button>
@@ -127,11 +128,15 @@
 
     <a href="/stats">Flight Statistics</a>
     <a href="/closest">Closest Flight (Map)</a>
-    <a href="/closest/json">Closest Flight (Logs)</a>
+    <a href="/closest/log">Closest Flight (Logs)</a>
     <br>
     <a href="/farthest">Farthest Flights (Map)</a>
-    <a href="/farthest/json">Farthest Flights (Logs)</a>
-    <a href="/counter">Flight Counter (JSON)</a>
+    <a href="/farthest/log">Farthest Flights (Logs)</a>
+    <a href="/counter/log">Flight Counter (Log)</a>
+    <br>
+    <a href="/logs-hub">Logs Hub</a>
+    <a href="/blocklist">Plane Blocklist</a>
+    <a href="/config">Configuration (read-only)</a>
 
     <script>
         let pendingCallsign = "";
@@ -158,6 +163,40 @@
             document.getElementById("confirm-row").style.display = show ? "flex" : "none";
         }
 
+        function hidePicker() {
+            const p = document.getElementById("flight-picker");
+            p.style.display = "none";
+            p.innerHTML = "";
+        }
+
+        function showPicker(flights) {
+            // Multiple scheduled legs (e.g. AA100 JFK→LHR then LHR→JFK) — let the user pick
+            const picker = document.getElementById("flight-picker");
+            picker.innerHTML = "";
+            picker.style.display = "flex";
+            flights.forEach(f => {
+                const btn = document.createElement("button");
+                btn.style.cssText = "text-align:left; font-size:13px; padding:7px 10px; cursor:pointer; border:1px solid #ccc; border-radius:4px; background:#fafafa;";
+                const parts = [
+                    f.callsign,
+                    f.origin && f.destination ? `${f.origin}→${f.destination}` : "",
+                    f.dep_time ? `Dep ${f.dep_time}` : "",
+                    f.status || "",
+                ].filter(Boolean);
+                btn.textContent = parts.join("  ·  ");
+                btn.onclick = () => selectLeg(f);
+                picker.appendChild(btn);
+            });
+        }
+
+        async function selectLeg(f) {
+            hidePicker();
+            await saveCallsign(f.callsign, f.cached_route || null, f.scheduled_departure || null);
+            const route = f.origin && f.destination ? `${f.origin}→${f.destination}` : "";
+            setStatus(`✓ Saved: ${f.callsign} ${route}${f.dep_time ? " — dep " + f.dep_time : ""}`, "saved");
+            document.getElementById("callsign-input").value = "";
+        }
+
         async function lookupAndTrack() {
             const val = document.getElementById("callsign-input").value.trim().toUpperCase();
             if (!val) return;
@@ -166,6 +205,7 @@
             btn.disabled = true;
             btn.textContent = "Looking up...";
             showConfirm(false);
+            hidePicker();
             setStatus("Searching for " + val + "...", "found");
 
             try {
@@ -176,10 +216,17 @@
                 });
                 const data = await res.json();
 
-                if (data.found) {
-                    // Flight found — save automatically using the actual callsign
-                    await saveCallsign(data.callsign);
-                    setStatus(`✓ Found & saved: ${data.summary}`, "found");
+                if (data.found && data.multiple) {
+                    // Several legs found — user picks one
+                    setStatus(data.summary, "not-found");
+                    showPicker(data.flights);
+                } else if (data.found) {
+                    // Flight found (live or scheduled) — save with cached route info
+                    await saveCallsign(data.callsign, data.cached_route || null,
+                                       data.scheduled_departure || null);
+                    let msg = `✓ Found & saved: ${data.summary}`;
+                    if (data.warning) msg += ` — ${data.warning}`;
+                    setStatus(msg, data.warning ? "not-found" : "found");
                     document.getElementById("callsign-input").value = "";
                     showConfirm(false);
                 } else {
@@ -208,15 +255,19 @@
 
         function cancelSave() {
             showConfirm(false);
+            hidePicker();
             setStatus("", "");
             pendingCallsign = "";
         }
 
-        async function saveCallsign(callsign) {
+        async function saveCallsign(callsign, cached_route = null, scheduled_departure = null) {
+            const body = { callsign: callsign };
+            if (cached_route) body.cached_route = cached_route;
+            if (scheduled_departure) body.scheduled_departure = scheduled_departure;
             await fetch("/tracked/set", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ callsign: callsign })
+                body: JSON.stringify(body)
             });
             loadCurrent();
         }
@@ -230,6 +281,7 @@
             document.getElementById("callsign-input").value = "";
             setStatus("Tracking cleared.", "saved");
             showConfirm(false);
+            hidePicker();
             pendingCallsign = "";
             loadCurrent();
         }

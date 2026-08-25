@@ -183,6 +183,7 @@ TRACKED_FILE = os.path.join(DATA_DIR, "tracked_flight.json")
 MAPS_DIR = os.path.join(DATA_DIR, "maps")
 os.makedirs(MAPS_DIR, exist_ok=True)
 COUNTER_FILE = os.path.join(DATA_DIR, "flight_counter.json")
+BLOCKLIST_FILE = os.path.join(DATA_DIR, "blocked_planes.json")
 ROUTE_AUDIT_LOG = os.path.join(DATA_DIR, "route_audit.log")
 
 import socket as _socket
@@ -502,6 +503,68 @@ def log_flight_count(callsign, entry=None):
         safe_write_json(COUNTER_FILE, log)
 
 
+# --- Plane blocklist (concept from upstream c0wsaysmoo/plane-tracker-rgb-pi,
+#     commit 128d3d3 "can block individual planes from showing up") ---
+
+_blocklist_cache = {"mtime": None, "callsigns": [], "registrations": []}
+
+
+def load_blocklist():
+    """Return {"callsigns": [...], "registrations": [...]} from blocked_planes.json.
+
+    Entries are normalized to uppercase. The file is only re-read when its
+    mtime changes (so at most once per poll cycle); a missing or corrupt file
+    yields an empty blocklist. Managed via the web UI (/blocklist).
+    """
+    try:
+        mtime = os.path.getmtime(BLOCKLIST_FILE)
+    except OSError:
+        _blocklist_cache.update(mtime=None, callsigns=[], registrations=[])
+        return {"callsigns": [], "registrations": []}
+
+    if _blocklist_cache["mtime"] != mtime:
+        callsigns, registrations = [], []
+        try:
+            with open(BLOCKLIST_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                callsigns = [str(c).strip().upper()
+                             for c in data.get("callsigns", []) if str(c).strip()]
+                registrations = [str(r).strip().upper()
+                                 for r in data.get("registrations", []) if str(r).strip()]
+        except (json.JSONDecodeError, ValueError, OSError) as e:
+            logger.warning(f"Blocklist unreadable ({e}) — treating as empty")
+        _blocklist_cache.update(mtime=mtime, callsigns=callsigns,
+                                registrations=registrations)
+
+    return {"callsigns": list(_blocklist_cache["callsigns"]),
+            "registrations": list(_blocklist_cache["registrations"])}
+
+
+def is_blocked(callsign, registration, blocklist):
+    """True if this aircraft matches the blocklist (case-insensitive).
+
+    Callsign entries match exactly; a trailing "*" makes an entry a prefix
+    match ("RYR*" blocks every RYR… callsign, while plain "RYR" only blocks
+    the literal callsign "RYR"). Registration entries match the registration
+    exactly, and also the callsign — GA aircraft usually fly with their
+    registration as the callsign.
+    """
+    cs = (callsign or "").strip().upper()
+    reg = (registration or "").strip().upper()
+    for entry in blocklist.get("callsigns", []):
+        if entry.endswith("*"):
+            prefix = entry[:-1]
+            if prefix and cs.startswith(prefix):
+                return True
+        elif cs and cs == entry:
+            return True
+    for entry in blocklist.get("registrations", []):
+        if entry and (reg == entry or cs == entry):
+            return True
+    return False
+
+
 def load_tracked_callsign():
     """Read tracked flight data from tracked_flight.json.
 
@@ -784,13 +847,11 @@ class Overhead:
             flights = self._api.get_flights(bounds=ZONE_DEFAULT)
             stats["zone_raw"] = len(flights)
             flights = [f for f in flights if MIN_ALTITUDE < f.altitude < MAX_ALTITUDE]
-            # Filter out blocked callsigns
-            try:
-                from config import BLOCKED_CALLSIGNS
-                if BLOCKED_CALLSIGNS:
-                    flights = [f for f in flights if f.callsign.upper() not in BLOCKED_CALLSIGNS]
-            except (ImportError, NameError):
-                pass
+            # Filter out blocked planes (blocked_planes.json, managed via web UI)
+            blocklist = load_blocklist()
+            if blocklist["callsigns"] or blocklist["registrations"]:
+                flights = [f for f in flights
+                           if not is_blocked(f.callsign, f.registration, blocklist)]
             stats["zone_filtered"] = len(flights)
             flights.sort(key=lambda f: distance_from_flight_to_home(f))
             flights = flights[:MAX_FLIGHT_LOOKUP]
