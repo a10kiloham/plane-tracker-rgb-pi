@@ -585,7 +585,14 @@ class Overhead:
                 logger.debug("grab_data: previous _grab still running, skipping")
                 return
             self._processing = True
-        Thread(target=self._grab, daemon=True).start()
+        try:
+            Thread(target=self._grab, daemon=True).start()
+        except RuntimeError as e:
+            # Thread creation can fail under resource exhaustion; if we leave
+            # _processing set, polling would deadlock forever.
+            logger.error(f"grab_data: could not start _grab thread: {e}")
+            with self._lock:
+                self._processing = False
 
     def safe_get(self, d, *keys, default=None):
         for key in keys:

@@ -549,11 +549,15 @@ class FR24Client:
         fp_departure = (getattr(flight_plan, 'departure', '') or '') if flight_plan else ''
         fp_destination = (getattr(flight_plan, 'destination', '') or '') if flight_plan else ''
 
-        # flight_progress distances are in km (unsigned int)
-        remaining_km = (getattr(flight_progress, 'remaining_distance', 0) or 0) if flight_progress else 0
-        total_km = (getattr(flight_progress, 'great_circle_distance', 0) or 0) if flight_progress else 0
+        # flight_progress distances arrive in METERS from the gRPC API.
+        # Convert to km here at the source so every downstream consumer
+        # (overhead loop, tracked flight, farthest log) sees km consistently.
+        # Empirically confirmed: farthest.txt held values like 1,222,152 "km"
+        # (impossible; Earth max ~20,000 km) before this conversion.
+        remaining_km = ((getattr(flight_progress, 'remaining_distance', 0) or 0) if flight_progress else 0) / 1000.0
+        total_km = ((getattr(flight_progress, 'great_circle_distance', 0) or 0) if flight_progress else 0) / 1000.0
         eta = (getattr(flight_progress, 'eta', 0) or 0) if flight_progress else 0
-        traversed_distance = (getattr(flight_progress, 'traversed_distance', 0) or 0) if flight_progress else 0
+        traversed_distance = ((getattr(flight_progress, 'traversed_distance', 0) or 0) if flight_progress else 0) / 1000.0
         elapsed_time = (getattr(flight_progress, 'elapsed_time', 0) or 0) if flight_progress else 0
         remaining_time = (getattr(flight_progress, 'remaining_time', 0) or 0) if flight_progress else 0
 
@@ -638,7 +642,9 @@ class FR24Client:
             },
         }
 
-        # Trail points (defensive)
+        # Trail points (defensive). Capped to the most recent 200 airborne
+        # points below — long-haul flights can carry 1000+ points, and these
+        # dicts sit in the 30-min detail cache for up to 5 flights at a time.
         trail_points = []
         flight_trail = getattr(proto, 'flight_trail_list', []) or []
         for tp in flight_trail:
@@ -650,7 +656,7 @@ class FR24Client:
                     "alt": alt,
                     "ts": getattr(tp, 'snapshot_id', 0),
                 })
-        compat["trail"] = trail_points
+        compat["trail"] = trail_points[-200:]
 
         # Also store the flight_info position data (useful for tracked)
         if flight_info:

@@ -152,20 +152,27 @@ _FORECAST_CACHE_FILE = _os.path.join(_CACHE_DIR, "forecast.json")
 
 
 def _load_file_cache(path):
-    """Load cached data from file. Returns (data, timestamp) or (None, 0)."""
+    """Load cached data from file. Returns (data, timestamp) or (None, 0).
+    A cache saved with different TEMPERATURE_UNITS is treated as a miss so a
+    units change never shows values in the wrong scale."""
     try:
         with open(path, "r") as f:
             obj = _json.load(f)
+            if obj.get("units", TEMPERATURE_UNITS) != TEMPERATURE_UNITS:
+                return None, 0
             return obj.get("data"), obj.get("ts", 0)
     except (FileNotFoundError, _json.JSONDecodeError, KeyError):
         return None, 0
 
 
 def _save_file_cache(path, data):
-    """Save data + timestamp to file cache."""
+    """Save data + timestamp to file cache (atomic via rename, so a crash
+    mid-write can't leave a truncated JSON behind)."""
     try:
-        with open(path, "w") as f:
-            _json.dump({"data": data, "ts": time.time()}, f)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            _json.dump({"data": data, "ts": time.time(), "units": TEMPERATURE_UNITS}, f)
+        _os.replace(tmp, path)
     except (PermissionError, OSError) as e:
         logger.warning(f"Cannot write cache {path}: {e}")
 
