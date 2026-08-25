@@ -13,6 +13,10 @@ class LoadingPulseScene(object):
 
     @Animator.KeyFrame.add(2)
     def loading_pulse(self, count):
+        # ISS takeover — yield (takeover scene owns the whole canvas)
+        if getattr(self, "_iss_active", False):
+            return True
+
         reset_count = True
         if self.overhead.processing:
             # Calculate the brightness scaler and

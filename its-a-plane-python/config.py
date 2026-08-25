@@ -69,6 +69,10 @@ _raw_filler = os.environ.get("JOURNEY_BLANK_FILLER", "").strip()
 JOURNEY_BLANK_FILLER = f" {_raw_filler} " if _raw_filler else " ? "
 SPEED_UNITS = os.environ.get("SPEED_UNITS", "metric")
 
+# --- ISS overhead passes ---
+# Requires the optional `ephem` package; uses LOCATION_HOME as the observer.
+ISS_ENABLED = _bool(os.environ.get("ISS_ENABLED", "False"))
+
 # --- Logging & notifications ---
 EMAIL = os.environ.get("EMAIL", "")
 MAX_FARTHEST = int(os.environ.get("MAX_FARTHEST", "3"))

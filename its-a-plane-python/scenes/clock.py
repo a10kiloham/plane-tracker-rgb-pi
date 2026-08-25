@@ -54,7 +54,7 @@ class ClockScene(object):
 
     @Animator.KeyFrame.add(frames.PER_SECOND * 1)
     def clock(self, count):
-        if len(self._data):
+        if len(self._data) or getattr(self, "_iss_active", False):
             self._redraw_time = True
             return
 
