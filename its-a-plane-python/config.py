@@ -69,6 +69,12 @@ _raw_filler = os.environ.get("JOURNEY_BLANK_FILLER", "").strip()
 JOURNEY_BLANK_FILLER = f" {_raw_filler} " if _raw_filler else " ? "
 SPEED_UNITS = os.environ.get("SPEED_UNITS", "metric")
 
+# --- Hourly chime (played by systemd timer, see setup/systemd/) ---
+HOURLY_CHIME_ENABLED = _bool(os.environ.get("HOURLY_CHIME_ENABLED", "False"))
+HOURLY_CHIME_VOLUME = int(os.environ.get("HOURLY_CHIME_VOLUME", "50"))
+HOURLY_CHIME_QUIET_START = os.environ.get("HOURLY_CHIME_QUIET_START", "22:00")
+HOURLY_CHIME_QUIET_END = os.environ.get("HOURLY_CHIME_QUIET_END", "08:00")
+
 # --- Logging & notifications ---
 EMAIL = os.environ.get("EMAIL", "")
 MAX_FARTHEST = int(os.environ.get("MAX_FARTHEST", "3"))
