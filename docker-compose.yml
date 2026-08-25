@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   plane-tracker:
     container_name: plane-tracker
@@ -24,8 +22,8 @@ services:
     restart: unless-stopped
     
     # Network configuration
-    networks:
-      - plane-tracker-net
+    #networks:
+    #  - caddynet
     
     # Resource limits (optional - adjust as needed)
     deploy:
@@ -43,6 +41,6 @@ volumes:
     driver: local
 
 # Network configuration
-networks:
-  plane-tracker-net:
-    driver: bridge
+#networks:
+#  caddynet:
+#    driver: bridge
