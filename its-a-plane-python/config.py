@@ -75,6 +75,12 @@ HOURLY_CHIME_VOLUME = int(os.environ.get("HOURLY_CHIME_VOLUME", "50"))
 HOURLY_CHIME_QUIET_START = os.environ.get("HOURLY_CHIME_QUIET_START", "22:00")
 HOURLY_CHIME_QUIET_END = os.environ.get("HOURLY_CHIME_QUIET_END", "08:00")
 
+# --- Flyover context (landmarks / oceans / national parks) ---
+# When enabled, the tracked-flight stats line shows a US National Park the
+# aircraft is over, or the body of water when far from any city, instead of
+# always the nearest city.
+LANDMARKS_ENABLED = _bool(os.environ.get("LANDMARKS_ENABLED", "False"))
+
 # --- Logging & notifications ---
 EMAIL = os.environ.get("EMAIL", "")
 MAX_FARTHEST = int(os.environ.get("MAX_FARTHEST", "3"))

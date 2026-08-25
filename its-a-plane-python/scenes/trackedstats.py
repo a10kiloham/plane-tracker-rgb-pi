@@ -1,5 +1,6 @@
 from utilities.animator import Animator
 from utilities.cities import get_nearest_city
+from utilities.landmarks import get_nearest_landmark
 from setup import colours, fonts, screen
 from config import DISTANCE_UNITS
 from rgbmatrix import graphics
@@ -9,6 +10,11 @@ try:
     from config import SPEED_UNITS
 except (ImportError, ModuleNotFoundError, NameError):
     SPEED_UNITS = "knots"
+
+try:
+    from config import LANDMARKS_ENABLED
+except (ImportError, ModuleNotFoundError, NameError):
+    LANDMARKS_ENABLED = False
 
 try:
     from config import CLOCK_FORMAT
@@ -26,9 +32,18 @@ STATS_COLOUR    = colours.LIGHT_PINK
 AIRCRAFT_COLOUR = colours.LIGHT_PINK
 CITY_COLOUR     = colours.WHITE
 
-# Cache nearest city result — only recalculate when position changes significantly
+# Cache nearest city/landmark result — only recalculate when position changes
+# significantly (the lookup runs on the RENDER thread; see utilities/cities.py)
 _city_cache = {"lat": None, "lon": None, "result": None}
 _CITY_CACHE_THRESHOLD = 0.01  # ~1km — recalculate when plane moves this far
+
+
+def _lookup_context(lat, lon):
+    """Nearest city, or with LANDMARKS_ENABLED the flyover-context chain:
+    US National Park overhead > nearby city > ocean/sea name."""
+    if LANDMARKS_ENABLED:
+        return get_nearest_landmark(lat, lon)
+    return get_nearest_city(lat, lon)
 
 
 def _format_altitude(altitude):
@@ -112,7 +127,7 @@ def _build_stats(data):
             parts.append((ch, TIME_DIST_COLOUR))
         parts.append((" ", STATS_COLOUR))
 
-    # Nearest city (cached — only recalculate when position changes)
+    # Nearest city / flyover context (cached — only recalculate when position changes)
     lat = data.get("latitude")
     lon = data.get("longitude")
     if lat is not None and lon is not None:
@@ -121,7 +136,7 @@ def _build_stats(data):
                 or abs(lon - _city_cache["lon"]) > _CITY_CACHE_THRESHOLD):
             _city_cache["lat"] = lat
             _city_cache["lon"] = lon
-            _city_cache["result"] = get_nearest_city(lat, lon)
+            _city_cache["result"] = _lookup_context(lat, lon)
         nearest = _city_cache["result"]
         if nearest:
             for ch in f"nr {nearest['name']}":
