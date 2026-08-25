@@ -15,6 +15,8 @@ Usage:
 import csv
 import json
 import os
+import threading
+import time
 import requests
 from io import StringIO
 
@@ -29,6 +31,11 @@ CACHE_VERSION = 2
 # In-memory lookup: both IATA and ICAO -> {lat, lon}
 _db = {}
 _loaded = False
+_load_lock = threading.Lock()
+_not_found = set()          # codes confirmed missing; cleared on successful refresh
+_refresh_pending = False    # True while a background refresh thread is running
+_last_refresh_ts = 0.0      # last background refresh time (cooldown guard)
+_REFRESH_COOLDOWN = 86400   # at most one background re-download per day
 
 
 def _download_and_build():
@@ -101,37 +108,80 @@ def _load():
     _loaded = True
 
 
+def _background_refresh():
+    """Download a fresh airport database in a background thread (non-blocking)."""
+    global _db, _loaded, _refresh_pending, _not_found, _last_refresh_ts
+    with _load_lock:
+        try:
+            if os.path.exists(CACHE_FILE):
+                os.remove(CACHE_FILE)
+            new_db = _download_and_build()
+            if new_db:
+                _db = new_db
+                _loaded = True
+                _not_found = set()  # reset so newly-added airports can be found
+        finally:
+            _last_refresh_ts = time.time()
+            _refresh_pending = False
+
+
 def get_airport_coords(code):
     """
     Look up airport coordinates by IATA or ICAO code.
     Returns {"lat": float, "lon": float} or empty dict if not found.
+    On a cache miss, kicks off a non-blocking background refresh so the
+    display never freezes.
 
     Examples:
         get_airport_coords("ORD")   -> {"lat": 41.978, "lon": -87.904}
         get_airport_coords("KORD")  -> {"lat": 41.978, "lon": -87.904}
         get_airport_coords("EGLL")  -> {"lat": 51.477, "lon": -0.461}
     """
+    global _refresh_pending
     _load()
     if not code:
         return {}
 
     code = code.strip().upper()
 
-    # Try direct lookup
-    if code in _db:
-        return _db[code]
+    # Placeholder values — never valid airport codes
+    if code in ("?", "???", "N/A", "UNK", "UNKN", "ZZZZ"):
+        return {}
 
-    # Try IATA from ICAO (strip leading K for US airports)
-    if len(code) == 4 and code[0] == "K":
-        iata = code[1:]
-        if iata in _db:
-            return _db[iata]
+    # Skip codes already confirmed missing (cleared after a successful refresh)
+    if code in _not_found:
+        return {}
 
-    # Try ICAO from IATA (prepend K for US 3-letter codes)
-    if len(code) == 3:
-        icao = "K" + code
-        if icao in _db:
-            return _db[icao]
+    def _lookup(c):
+        if c in _db:
+            return _db[c]
+        # Try IATA from ICAO (strip leading K for US airports)
+        if len(c) == 4 and c[0] == "K":
+            iata = c[1:]
+            if iata in _db:
+                return _db[iata]
+        # Try ICAO from IATA (prepend K for US 3-letter codes)
+        if len(c) == 3:
+            icao = "K" + c
+            if icao in _db:
+                return _db[icao]
+        return None
+
+    result = _lookup(code)
+    if result:
+        return result
+
+    # Miss — schedule a non-blocking background refresh if none is running.
+    # Cooldown prevents a truly-unknown code from re-triggering the multi-MB
+    # CSV download on every poll cycle after each refresh completes.
+    if not _refresh_pending and (time.time() - _last_refresh_ts) > _REFRESH_COOLDOWN:
+        _refresh_pending = True
+        print(f"[Airports] '{code}' not found — scheduling background refresh...")
+        t = threading.Thread(target=_background_refresh, daemon=True)
+        t.start()
+    else:
+        _not_found.add(code)
+        print(f"[Airports] '{code}' not found in database")
 
     return {}
 
