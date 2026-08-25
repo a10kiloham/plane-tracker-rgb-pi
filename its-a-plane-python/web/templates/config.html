@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Configuration — Flight Tracker</title>
+<link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap');
+  :root{--bg:#0d0d0b;--amber:#ffb300;--amber-dim:#7a5500;--amber-bright:#ffd54f;--green:#69f0ae;--row-border:rgba(255,179,0,0.08)}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--amber);font-family:'Share Tech Mono',monospace;min-height:100vh;padding-bottom:32px}
+  body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.03) 2px,rgba(0,0,0,0.03) 4px);pointer-events:none;z-index:1000}
+  .board-header{background:var(--amber);color:var(--bg);padding:10px 20px;display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .board-title{font-family:'VT323',monospace;font-size:32px;letter-spacing:4px;text-transform:uppercase}
+  .back{font-family:'VT323',monospace;font-size:20px;letter-spacing:2px;background:var(--bg);color:var(--amber);padding:2px 12px;text-decoration:none;margin-left:auto}
+  .content{padding:0 16px;max-width:820px;margin:0 auto}
+  .hint{font-size:13px;color:var(--amber-dim);margin-bottom:16px;line-height:1.6}
+  .hint code{color:var(--amber-bright)}
+  .panel{border:1px solid var(--amber-dim);padding:16px;background:rgba(255,179,0,0.02);margin-bottom:12px}
+  .panel-title{font-family:'VT323',monospace;font-size:22px;letter-spacing:3px;text-transform:uppercase;color:var(--amber-bright);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--amber-dim)}
+  .kv{display:grid;grid-template-columns:220px 1fr;border-bottom:1px solid var(--row-border);padding:6px 0;font-size:14px}
+  .kv:last-child{border-bottom:none}
+  .kv .k{color:var(--amber-dim)}
+  .kv .v{color:var(--amber-bright);word-break:break-all}
+  .kv .v.empty{color:var(--amber-dim);font-style:italic}
+  @media (max-width:600px){.kv{grid-template-columns:1fr}}
+  .loading{text-align:center;padding:60px;color:var(--amber-dim);font-family:'VT323',monospace;font-size:24px;letter-spacing:3px}
+</style>
+</head>
+<body>
+<div class="board-header">
+  <span style="font-size:26px">✈</span>
+  <div class="board-title">Configuration<span style="font-size:11px;letter-spacing:3px;opacity:0.6;margin-left:8px">READ-ONLY</span></div>
+  <a class="back" href="/">← BOARD</a>
+</div>
+
+<div class="content">
+  <div class="hint">
+    Configuration is sourced exclusively from environment variables — edit
+    <code>/etc/plane-tracker.env</code> (production) or <code>.env</code> (development)
+    and restart the service. See <code>.env.example</code> for documentation of every variable.
+    API keys are masked below.
+  </div>
+  <div id="panels"><div class="loading">Loading…</div></div>
+</div>
+
+<script>
+const SECTIONS = [
+  ['Location & Zone', ['HOME_LAT','HOME_LON','ZONE_TL_LAT','ZONE_TL_LON','ZONE_BR_LAT','ZONE_BR_LON','JOURNEY_CODE_SELECTED']],
+  ['Units & Display', ['DISTANCE_UNITS','SPEED_UNITS','TEMPERATURE_UNITS','CLOCK_FORMAT','BRIGHTNESS','BRIGHTNESS_NIGHT','NIGHT_BRIGHTNESS','NIGHT_START','NIGHT_END','GPIO_SLOWDOWN','HAT_PWM_ENABLED','JOURNEY_BLANK_FILLER','FORECAST_DAYS']],
+  ['Flights & Stats', ['MIN_ALTITUDE','MAX_CLOSEST','MAX_FARTHEST','STATS_LOG_DAYS']],
+  ['Weather', ['TEMPERATURE_LOCATION']],
+  ['API Keys (masked)', ['FR24_API_KEY','TOMORROW_API_KEY','AIRLABS_API_KEY']],
+  ['System', ['EMAIL','SERVICE_NAME','PLANE_TRACKER_DATA_DIR']],
+];
+
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+async function load() {
+  let cfg;
+  try {
+    cfg = await fetch('/api/config').then(r => r.json());
+  } catch (e) {
+    document.getElementById('panels').innerHTML = '<div class="loading">Failed to load config</div>';
+    return;
+  }
+  document.getElementById('panels').innerHTML = SECTIONS.map(([title, keys]) => `
+    <div class="panel">
+      <div class="panel-title">▸ ${esc(title)}</div>
+      ${keys.map(k => {
+        const v = cfg[k];
+        const shown = (v === '' || v === null || v === undefined) ? 'not set'
+                    : (typeof v === 'boolean') ? (v ? 'true' : 'false') : String(v);
+        const empty = (v === '' || v === null || v === undefined) ? ' empty' : '';
+        return `<div class="kv"><div class="k">${esc(k)}</div><div class="v${empty}">${esc(shown)}</div></div>`;
+      }).join('')}
+    </div>`).join('');
+}
+load();
+</script>
+</body>
+</html>

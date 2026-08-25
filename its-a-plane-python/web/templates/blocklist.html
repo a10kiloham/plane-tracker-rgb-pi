@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plane Blocklist — Flight Tracker</title>
+<link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap');
+  :root{--bg:#0d0d0b;--amber:#ffb300;--amber-dim:#7a5500;--amber-glow:rgba(255,179,0,0.1);--amber-bright:#ffd54f;--red:#ff3d00;--green:#69f0ae;--row-border:rgba(255,179,0,0.08)}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--amber);font-family:'Share Tech Mono',monospace;min-height:100vh;padding-bottom:32px}
+  body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.03) 2px,rgba(0,0,0,0.03) 4px);pointer-events:none;z-index:1000}
+  .board-header{background:var(--amber);color:var(--bg);padding:10px 20px;display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .board-title{font-family:'VT323',monospace;font-size:32px;letter-spacing:4px;text-transform:uppercase}
+  .back{font-family:'VT323',monospace;font-size:20px;letter-spacing:2px;background:var(--bg);color:var(--amber);padding:2px 12px;text-decoration:none;margin-left:auto}
+  .content{padding:0 16px;max-width:900px;margin:0 auto}
+  .hint{font-size:13px;color:var(--amber-dim);margin-bottom:16px;line-height:1.6}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:600px){.cols{grid-template-columns:1fr}}
+  .panel{border:1px solid var(--amber-dim);padding:16px;background:rgba(255,179,0,0.02)}
+  .panel-title{font-family:'VT323',monospace;font-size:22px;letter-spacing:3px;text-transform:uppercase;color:var(--amber-bright);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--amber-dim)}
+  .add-row{display:flex;gap:8px;margin-bottom:12px}
+  .add-row input{flex:1;background:var(--bg);border:1px solid var(--amber-dim);color:var(--amber-bright);font-family:'Share Tech Mono',monospace;font-size:15px;padding:6px 10px;text-transform:uppercase;outline:none}
+  .add-row input:focus{border-color:var(--amber)}
+  .add-row button{background:var(--amber);color:var(--bg);border:none;font-family:'VT323',monospace;font-size:18px;letter-spacing:2px;padding:6px 16px;cursor:pointer}
+  .add-row button:hover{background:var(--amber-bright)}
+  ul.entries{list-style:none}
+  ul.entries li{display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--row-border);font-family:'VT323',monospace;font-size:22px;letter-spacing:2px;color:var(--amber-bright)}
+  ul.entries li .kind{font-size:13px;font-family:'Share Tech Mono',monospace;color:var(--amber-dim)}
+  ul.entries li button{margin-left:auto;background:transparent;border:1px solid var(--amber-dim);color:var(--red);font-family:'Share Tech Mono',monospace;font-size:12px;padding:2px 10px;cursor:pointer}
+  ul.entries li button:hover{border-color:var(--red)}
+  .empty{color:var(--amber-dim);font-size:14px;padding:8px 4px}
+  #status{margin-top:14px;font-size:14px;min-height:18px}
+  #status.ok{color:var(--green)}
+  #status.err{color:var(--red)}
+</style>
+</head>
+<body>
+<div class="board-header">
+  <span style="font-size:26px">✈</span>
+  <div class="board-title">Plane Blocklist</div>
+  <a class="back" href="/">← BOARD</a>
+</div>
+
+<div class="content">
+  <div class="hint">
+    Blocked planes are filtered out of the overhead display before any API lookups.
+    Callsign entries match exactly — add a trailing <b>*</b> for a prefix match
+    (e.g. <b>RYR*</b> blocks every Ryanair callsign, while <b>RYR</b> only blocks the literal
+    callsign "RYR"). Registration entries (e.g. <b>N123AB</b>) block that airframe whether it
+    appears by registration or flies with its registration as the callsign. Matching is
+    case-insensitive. Changes take effect on the tracker's next poll cycle.
+  </div>
+
+  <div class="cols">
+    <div class="panel">
+      <div class="panel-title">▸ Blocked Callsigns</div>
+      <div class="add-row">
+        <input id="cs-input" maxlength="11" placeholder="e.g. UAL1234 or RYR*" spellcheck="false" autocomplete="off">
+        <button onclick="addEntry('callsigns','cs-input')">ADD</button>
+      </div>
+      <ul class="entries" id="cs-list"></ul>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">▸ Blocked Registrations</div>
+      <div class="add-row">
+        <input id="reg-input" maxlength="10" placeholder="e.g. N123AB" spellcheck="false" autocomplete="off">
+        <button onclick="addEntry('registrations','reg-input')">ADD</button>
+      </div>
+      <ul class="entries" id="reg-list"></ul>
+    </div>
+  </div>
+
+  <div id="status"></div>
+</div>
+
+<script>
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function setStatus(msg, ok) {
+  const el = document.getElementById('status');
+  el.textContent = msg || '';
+  el.className = msg ? (ok ? 'ok' : 'err') : '';
+}
+
+function renderList(id, kind, entries) {
+  const ul = document.getElementById(id);
+  if (!entries.length) {
+    ul.innerHTML = '<li class="empty" style="border:none">Nothing blocked</li>';
+    return;
+  }
+  ul.innerHTML = entries.map(v =>
+    '<li><span>' + esc(v) + '</span>'
+    + (v.endsWith('*') ? '<span class="kind">prefix</span>' : '')
+    + '<button onclick="removeEntry(\'' + kind + '\',\'' + esc(v) + '\')">REMOVE</button></li>'
+  ).join('');
+}
+
+function render(data) {
+  renderList('cs-list', 'callsigns', data.callsigns || []);
+  renderList('reg-list', 'registrations', data.registrations || []);
+}
+
+async function load() {
+  try {
+    const res = await fetch('/blocklist/json');
+    render(await res.json());
+  } catch (e) {
+    setStatus('Failed to load blocklist: ' + e.message, false);
+  }
+}
+
+async function addEntry(kind, inputId) {
+  const input = document.getElementById(inputId);
+  const value = input.value.trim().toUpperCase();
+  if (!value) return;
+  try {
+    const res = await fetch('/blocklist/add', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({type: kind, value})
+    });
+    const data = await res.json();
+    if (!res.ok) { setStatus(data.error || 'Add failed', false); return; }
+    input.value = '';
+    setStatus(data.message, true);
+    render(data);
+  } catch (e) { setStatus('Add failed: ' + e.message, false); }
+}
+
+async function removeEntry(kind, value) {
+  try {
+    const res = await fetch('/blocklist/remove', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({type: kind, value})
+    });
+    const data = await res.json();
+    if (!res.ok) { setStatus(data.error || 'Remove failed', false); return; }
+    setStatus(data.message, true);
+    render(data);
+  } catch (e) { setStatus('Remove failed: ' + e.message, false); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('cs-input').addEventListener('keydown', e => { if (e.key === 'Enter') addEntry('callsigns','cs-input'); });
+  document.getElementById('reg-input').addEventListener('keydown', e => { if (e.key === 'Enter') addEntry('registrations','reg-input'); });
+  load();
+});
+</script>
+</body>
+</html>
