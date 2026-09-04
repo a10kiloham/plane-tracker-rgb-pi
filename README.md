@@ -236,6 +236,33 @@ This is what I used to make mine. Other than the Pi and the Bonnet you can use w
 
 ---
 
+# Updating an Existing Machine
+
+Any machine already running this tracker (any version, any layout) is brought
+fully up to date with one command:
+
+```bash
+ssh <machine>
+sudo git -C /home/robk/plane-tracker-rgb-pi pull --ff-only
+sudo bash /home/robk/plane-tracker-rgb-pi/its-a-plane-python/setup/update-machine.sh
+```
+
+(The first `git pull` fetches the script itself on machines that predate it;
+on a repo not owned by root, run
+`sudo git config --global --add safe.directory /home/robk/plane-tracker-rgb-pi`
+first if the pull complains about dubious ownership — the script handles this
+itself on every later run.)
+
+The script is idempotent and handles all fleet variations automatically:
+root- or user-owned repo, venv (`<repo>/.venv`) or system python, and it
+installs the systemd unit (with the `MALLOC_ARENA_MAX=2` memory-leak fix),
+the `ephem` dependency, cleans farthest.txt entries corrupted by the old
+meters-as-km bug, enables persistent journald, restarts the service, and
+verifies the process environment and web UI. If the repo lives somewhere
+else, pass the path as the first argument.
+
+---
+
 # Plane Tracker RGB Pi Setup Guide
 
 Once you get your Raspberry Pi up and running, you can follow [this guide](https://linuxconfig.org/enabling-ssh-on-raspberry-pi-a-comprehensive-guide) to set up the project. 
