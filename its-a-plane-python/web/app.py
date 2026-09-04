@@ -997,6 +997,104 @@ def blocklist_remove():
     return jsonify({"message": f"Unblocked {value}", **load_blocklist()})
 
 
+# ---- Airport corrections & display settings (dashboard) ----
+
+_AIRPORT_CODE_RE = re.compile(r"^[A-Z0-9]{2,4}$")
+
+
+@app.get("/api/airport-info")
+def api_airport_info():
+    """Current mapping, colliding candidates, and override status for a code."""
+    try:
+        from utilities.airports import get_airport_info
+    except ImportError:
+        return jsonify({"error": "airports module unavailable"}), 500
+    code = (request.args.get("code") or "").strip().upper()
+    if not _AIRPORT_CODE_RE.match(code):
+        return jsonify({"error": "code must be 2-4 letters/digits"}), 400
+    return jsonify(get_airport_info(code))
+
+
+@app.get("/api/airport-overrides")
+def api_airport_overrides():
+    """All permanent corrections currently in force."""
+    try:
+        from utilities.airports import load_overrides
+    except ImportError:
+        return jsonify({})
+    return jsonify(load_overrides())
+
+
+@app.post("/api/airport-override")
+def api_airport_override_set():
+    """Pin a code to a location permanently (survives database rebuilds).
+
+    JSON: {"code": "QSI", "icao": "KQSI"}        — copy that ICAO entry's location
+       or {"code": "QSI", "lat": .., "lon": ..}  — explicit coordinates
+    """
+    try:
+        from utilities import airports as _airports
+    except ImportError:
+        return jsonify({"error": "airports module unavailable"}), 500
+    data = request.get_json(force=True) or {}
+    code = (data.get("code") or "").strip().upper()
+    if not _AIRPORT_CODE_RE.match(code):
+        return jsonify({"error": "code must be 2-4 letters/digits"}), 400
+
+    icao = (data.get("icao") or "").strip().upper()
+    lat, lon = data.get("lat"), data.get("lon")
+    name = (data.get("name") or "").strip()
+
+    if lat is None or lon is None:
+        # Resolve location from the given ICAO ident
+        if not icao:
+            return jsonify({"error": "provide lat+lon or an icao ident"}), 400
+        entry = _airports.get_airport_info(icao).get("entry")
+        if not entry:
+            return jsonify({"error": f"ICAO {icao} not found in database"}), 404
+        lat, lon = entry["lat"], entry["lon"]
+        name = name or entry.get("name", "")
+
+    try:
+        stored = _airports.set_override(code, lat, lon, icao=icao, name=name)
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({
+        "message": f"{code} pinned to {stored['lat']:.4f}, {stored['lon']:.4f}",
+        "entry": stored,
+        "overrides": _airports.load_overrides(),
+    })
+
+
+@app.post("/api/airport-override/remove")
+def api_airport_override_remove():
+    try:
+        from utilities import airports as _airports
+    except ImportError:
+        return jsonify({"error": "airports module unavailable"}), 500
+    data = request.get_json(force=True) or {}
+    code = (data.get("code") or "").strip().upper()
+    if not _airports.remove_override(code):
+        return jsonify({"error": f"no override for {code}"}), 404
+    return jsonify({"message": f"Override for {code} removed",
+                    "overrides": _airports.load_overrides()})
+
+
+@app.route("/api/display-settings", methods=["GET", "POST"])
+def api_display_settings():
+    """The dashboard's unknown-route filter checkboxes.
+
+    GET returns current settings; POST accepts any subset of the known keys
+    and returns the persisted result.
+    """
+    if request.method == "GET":
+        return jsonify(_overhead.load_display_settings())
+    data = request.get_json(force=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "expected a JSON object"}), 400
+    return jsonify(_overhead.save_display_settings(data))
+
+
 # ---- ATC radio (LiveATC audio auto-tuned to overhead traffic) ----
 # Ported from ajplotkin/atc-audio. Reads current_overhead.json (written by
 # utilities/overhead.py). Clients pull the LiveATC stream directly — nothing

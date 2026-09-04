@@ -584,6 +584,70 @@ def is_blocked(callsign, registration, blocklist):
     return False
 
 
+# --- Display settings (web UI checkboxes: unknown-route filters) ---
+
+DISPLAY_SETTINGS_FILE = os.path.join(DATA_DIR, "display_settings.json")
+
+_display_settings_cache = {"mtime": None, "settings": {}}
+
+DISPLAY_SETTINGS_DEFAULTS = {
+    "ignore_single_unknown": False,  # hide flights with one "?" endpoint
+    "ignore_double_unknown": False,  # hide flights with "?" -> "?"
+}
+
+
+def load_display_settings():
+    """Return display settings from display_settings.json (mtime-cached,
+    so re-read at most once per poll cycle). Missing/corrupt file or keys
+    fall back to defaults. Managed via the dashboard checkboxes."""
+    try:
+        mtime = os.path.getmtime(DISPLAY_SETTINGS_FILE)
+    except OSError:
+        return dict(DISPLAY_SETTINGS_DEFAULTS)
+
+    if _display_settings_cache["mtime"] != mtime:
+        settings = dict(DISPLAY_SETTINGS_DEFAULTS)
+        try:
+            with open(DISPLAY_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for key in DISPLAY_SETTINGS_DEFAULTS:
+                    if key in data:
+                        settings[key] = bool(data[key])
+        except (json.JSONDecodeError, ValueError, OSError) as e:
+            logger.warning(f"Display settings unreadable ({e}) — using defaults")
+        _display_settings_cache.update(mtime=mtime, settings=settings)
+
+    return dict(_display_settings_cache["settings"])
+
+
+def save_display_settings(settings):
+    """Persist display settings (only known keys, coerced to bool)."""
+    clean = dict(DISPLAY_SETTINGS_DEFAULTS)
+    for key in DISPLAY_SETTINGS_DEFAULTS:
+        if key in settings:
+            clean[key] = bool(settings[key])
+    safe_write_json(DISPLAY_SETTINGS_FILE, clean)
+    return clean
+
+
+def should_ignore_unknown(origin, destination, settings):
+    """True if this flight should be hidden per the unknown-route filters.
+
+    "double unknown" = neither endpoint resolved ("? -> ?");
+    "single unknown" = exactly one endpoint resolved ("? -> LAX" or "LAX -> ?").
+    Runs AFTER the FlightStats route fallback, so a flight is only treated
+    as unknown once every route source has had its chance.
+    """
+    has_origin = bool(origin)
+    has_dest = bool(destination)
+    if not has_origin and not has_dest:
+        return bool(settings.get("ignore_double_unknown"))
+    if has_origin != has_dest:
+        return bool(settings.get("ignore_single_unknown"))
+    return False
+
+
 def load_tracked_callsign():
     """Read tracked flight data from tracked_flight.json.
 
@@ -774,6 +838,7 @@ class Overhead:
             f"│ After altitude filter: {stats.get('zone_filtered', 0)} "
             f"(min={MIN_ALTITUDE}ft, max={MAX_ALTITUDE}ft)",
             f"│ Flights processed:     {stats.get('flights_processed', 0)}",
+            f"│ Unknown-route hidden:  {stats.get('unknown_filtered', 0)}",
             f"│ Details fetched (API): {stats.get('details_fetched', 0)}",
             "├─── Data Sources ───────────────────────────────────────",
             f"│ Local airports used:   {stats.get('airport_lookups', 0)} "
@@ -850,6 +915,7 @@ class Overhead:
         stats = {
             "zone_raw": 0,
             "zone_filtered": 0,
+            "unknown_filtered": 0,
             "flights_processed": 0,
             "details_fetched": 0,
             "airport_lookups": 0,
@@ -971,6 +1037,13 @@ class Overhead:
                                             plane = fs["aircraft"]
                             except Exception:
                                 pass
+
+                        # Unknown-route filters (dashboard checkboxes).
+                        # Applied after every route source (gRPC + FlightStats)
+                        # has had its chance to resolve the endpoints.
+                        if should_ignore_unknown(origin, destination, load_display_settings()):
+                            stats["unknown_filtered"] += 1
+                            break  # skip this flight entirely
 
                         t = self.safe_get(d, "time", default={})
                         time_sched_dep = self.safe_get(t, "scheduled", "departure")
