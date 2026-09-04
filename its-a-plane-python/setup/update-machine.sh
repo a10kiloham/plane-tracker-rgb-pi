@@ -33,9 +33,36 @@ fi
 echo "── 1/7 Updating repo at $REPO ──────────────────────────────────────"
 # Root pulling a repo owned by anyone triggers git's dubious-ownership guard.
 git config --global --add safe.directory "$REPO" 2>/dev/null || true
+# chmod -R on a checkout makes every file look modified; ignore mode-only diffs.
+git -C "$REPO" config core.fileMode false
+
+# Recover from a previously interrupted update: unmerged index entries (e.g.
+# airports.json's tracked->untracked transition conflicting with a stash pop)
+# block every later pull. Drop them from the index, keep the worktree files.
+UNMERGED=$(git -C "$REPO" diff --name-only --diff-filter=U)
+if [ -n "$UNMERGED" ]; then
+    echo "Recovering unmerged index entries:"
+    echo "$UNMERGED" | while read -r f; do
+        git -C "$REPO" rm -q -f --cached "$f" 2>/dev/null || true
+    done
+fi
+git -C "$REPO" reset -q || true   # unstage leftovers so stash sees a clean index
+
 git -C "$REPO" stash -q || true
 git -C "$REPO" pull --ff-only
-git -C "$REPO" stash pop -q 2>/dev/null || true
+if ! git -C "$REPO" stash pop -q 2>/dev/null; then
+    # Pop conflicts happen when a stashed file stopped being tracked upstream.
+    # Resolve by dropping the conflicting index entries (worktree kept) and
+    # discarding the stash — local caches rebuild themselves.
+    POP_UNMERGED=$(git -C "$REPO" diff --name-only --diff-filter=U)
+    if [ -n "$POP_UNMERGED" ]; then
+        echo "Stash pop conflicted on: $POP_UNMERGED — resolving"
+        echo "$POP_UNMERGED" | while read -r f; do
+            git -C "$REPO" rm -q -f --cached "$f" 2>/dev/null || true
+        done
+        git -C "$REPO" stash drop -q 2>/dev/null || true
+    fi
+fi
 git -C "$REPO" log --oneline -1
 
 echo "── 2/7 Detecting python ────────────────────────────────────────────"
