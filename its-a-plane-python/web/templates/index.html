@@ -90,6 +90,17 @@
         .confirm-row .btn-cancel { background: #ccc; color: #333; }
         hr { border: none; border-top: 1px solid #ddd; margin: 20px 0; }
         .note { font-size: 13px; color: #888; margin-top: 10px; }
+        .apt-table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 14px; }
+        .apt-table th, .apt-table td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; }
+        .apt-table th { background: #f4f6f8; font-weight: 600; }
+        .apt-table button { font-size: 13px; padding: 3px 10px; cursor: pointer; border: none; border-radius: 4px; background: #0066cc; color: white; }
+        .apt-table button.remove { background: #b23b3b; }
+        .apt-msg { font-size: 13px; margin-top: 8px; min-height: 16px; }
+        .apt-msg.ok { color: #2d6a4f; }
+        .apt-msg.err { color: #721c24; }
+        .override-badge { background: #e07000; color: white; font-size: 11px; border-radius: 3px; padding: 1px 6px; margin-left: 6px; }
+        .filter-row { display: flex; gap: 24px; align-items: center; font-size: 15px; margin-top: 4px; flex-wrap: wrap; }
+        .filter-row label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -122,6 +133,42 @@
             <button id="btn-route" onclick="searchRoute()">Search</button>
         </div>
         <div id="route-results" style="margin-top:12px; font-size:14px;"></div>
+    </div>
+
+    <div class="track-box">
+        <h2>Airport Corrections</h2>
+        <div class="track-row">
+            <input type="text" id="apt-code-input" placeholder="Code (QSI)" maxlength="4" style="width:110px;" />
+            <button id="btn-apt-lookup" onclick="aptLookup()">Look up</button>
+        </div>
+        <div id="apt-result" style="margin-top:10px; font-size:14px;"></div>
+        <div id="apt-manual" style="display:none; margin-top:10px;">
+            <div class="track-row">
+                <input type="text" id="apt-icao-input" placeholder="ICAO (KQSI)" maxlength="4" style="width:110px;" />
+                <span class="note" style="margin:0;">or</span>
+                <input type="text" id="apt-lat-input" placeholder="Lat" style="width:100px; text-transform:none;" />
+                <input type="text" id="apt-lon-input" placeholder="Lon" style="width:100px; text-transform:none;" />
+                <button onclick="aptSaveManual()">Pin location</button>
+            </div>
+        </div>
+        <div class="apt-msg" id="apt-msg"></div>
+        <div id="apt-overrides"></div>
+        <p class="note">Corrects ambiguous IATA codes (e.g. QSI resolving to the wrong continent).
+        Pinned locations are permanent — they survive airport-database rebuilds. Pin by choosing a
+        candidate, entering the correct ICAO ident, or explicit coordinates.</p>
+    </div>
+
+    <div class="track-box">
+        <h2>Display Filters</h2>
+        <div class="filter-row">
+            <label><input type="checkbox" id="chk-single-unknown" onchange="saveDisplaySettings()" />
+                Ignore single-unknown flights (? → LAX)</label>
+            <label><input type="checkbox" id="chk-double-unknown" onchange="saveDisplaySettings()" />
+                Ignore double-unknown flights (? → ?)</label>
+        </div>
+        <div class="apt-msg" id="filter-msg"></div>
+        <p class="note">Hides flights whose route can't be resolved from any source. Takes effect on
+        the next poll cycle — no restart needed.</p>
     </div>
 
     <hr>
@@ -331,6 +378,161 @@
             btn.textContent = "Search";
         }
 
+        // ---- Airport corrections ----
+
+        function aptMsg(text, ok) {
+            const el = document.getElementById("apt-msg");
+            el.textContent = text;
+            el.className = "apt-msg " + (ok ? "ok" : "err");
+        }
+
+        function fmtEntry(e) {
+            if (!e) return "<em>not in database</em>";
+            const name = e.name ? `${e.name} ` : "";
+            const icao = e.icao ? `[${e.icao}] ` : "";
+            const badge = e.override ? `<span class="override-badge">PINNED</span>` : "";
+            return `${name}${icao}(${e.lat.toFixed(4)}, ${e.lon.toFixed(4)})${badge}`;
+        }
+
+        async function aptLookup() {
+            const code = document.getElementById("apt-code-input").value.trim().toUpperCase();
+            if (!code) return;
+            const resultEl = document.getElementById("apt-result");
+            resultEl.textContent = "Looking up...";
+            document.getElementById("apt-msg").textContent = "";
+            try {
+                const res = await fetch(`/api/airport-info?code=${encodeURIComponent(code)}`);
+                const data = await res.json();
+                if (data.error) { resultEl.textContent = ""; aptMsg(data.error, false); return; }
+                let html = `<strong>${data.code}</strong> currently → ${fmtEntry(data.entry)}`;
+                if (data.candidates && data.candidates.length > 1) {
+                    html += `<table class="apt-table"><tr><th>Candidate</th><th>ICAO</th><th>Country</th><th>Type</th><th>Location</th><th></th></tr>`;
+                    for (const c of data.candidates) {
+                        html += `<tr><td>${c.name || "?"}</td><td>${c.icao || "—"}</td>` +
+                                `<td>${c.country || "—"}</td><td>${(c.type || "").replace("_airport","")}</td>` +
+                                `<td>${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}</td>` +
+                                `<td><button onclick='aptPin("${data.code}", ${c.lat}, ${c.lon}, "${c.icao || ""}", ${JSON.stringify(c.name || "")})'>Use this</button></td></tr>`;
+                    }
+                    html += `</table>`;
+                }
+                resultEl.innerHTML = html;
+                document.getElementById("apt-manual").style.display = "block";
+            } catch (e) {
+                resultEl.textContent = "";
+                aptMsg("Lookup failed — check your connection.", false);
+            }
+        }
+
+        async function aptPin(code, lat, lon, icao, name) {
+            try {
+                const res = await fetch("/api/airport-override", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ code, lat, lon, icao, name })
+                });
+                const data = await res.json();
+                if (data.error) { aptMsg(data.error, false); return; }
+                aptMsg(data.message, true);
+                loadOverrides();
+                aptLookup();
+            } catch (e) { aptMsg("Save failed.", false); }
+        }
+
+        async function aptSaveManual() {
+            const code = document.getElementById("apt-code-input").value.trim().toUpperCase();
+            const icao = document.getElementById("apt-icao-input").value.trim().toUpperCase();
+            const latS = document.getElementById("apt-lat-input").value.trim();
+            const lonS = document.getElementById("apt-lon-input").value.trim();
+            if (!code) { aptMsg("Look up a code first.", false); return; }
+            const body = { code };
+            if (latS && lonS) {
+                body.lat = parseFloat(latS); body.lon = parseFloat(lonS);
+                if (isNaN(body.lat) || isNaN(body.lon)) { aptMsg("Invalid lat/lon.", false); return; }
+                if (icao) body.icao = icao;
+            } else if (icao) {
+                body.icao = icao;
+            } else {
+                aptMsg("Enter an ICAO ident or lat + lon.", false); return;
+            }
+            try {
+                const res = await fetch("/api/airport-override", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (data.error) { aptMsg(data.error, false); return; }
+                aptMsg(data.message, true);
+                loadOverrides();
+                aptLookup();
+            } catch (e) { aptMsg("Save failed.", false); }
+        }
+
+        async function aptRemove(code) {
+            try {
+                const res = await fetch("/api/airport-override/remove", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ code })
+                });
+                const data = await res.json();
+                if (data.error) { aptMsg(data.error, false); return; }
+                aptMsg(data.message, true);
+                loadOverrides();
+            } catch (e) { aptMsg("Remove failed.", false); }
+        }
+
+        async function loadOverrides() {
+            try {
+                const res = await fetch("/api/airport-overrides");
+                const data = await res.json();
+                const el = document.getElementById("apt-overrides");
+                const codes = Object.keys(data).sort();
+                if (codes.length === 0) { el.innerHTML = ""; return; }
+                let html = `<table class="apt-table"><tr><th>Code</th><th>Pinned to</th><th>ICAO</th><th></th></tr>`;
+                for (const c of codes) {
+                    const o = data[c];
+                    html += `<tr><td><strong>${c}</strong></td>` +
+                            `<td>${o.name ? o.name + " " : ""}(${(+o.lat).toFixed(4)}, ${(+o.lon).toFixed(4)})</td>` +
+                            `<td>${o.icao || "—"}</td>` +
+                            `<td><button class="remove" onclick='aptRemove("${c}")'>Remove</button></td></tr>`;
+                }
+                el.innerHTML = html + `</table>`;
+            } catch (e) { /* non-fatal */ }
+        }
+
+        // ---- Display filters (unknown-route checkboxes) ----
+
+        async function loadDisplaySettings() {
+            try {
+                const res = await fetch("/api/display-settings");
+                const s = await res.json();
+                document.getElementById("chk-single-unknown").checked = !!s.ignore_single_unknown;
+                document.getElementById("chk-double-unknown").checked = !!s.ignore_double_unknown;
+            } catch (e) { /* non-fatal */ }
+        }
+
+        async function saveDisplaySettings() {
+            const msg = document.getElementById("filter-msg");
+            try {
+                const res = await fetch("/api/display-settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        ignore_single_unknown: document.getElementById("chk-single-unknown").checked,
+                        ignore_double_unknown: document.getElementById("chk-double-unknown").checked,
+                    })
+                });
+                const s = await res.json();
+                msg.textContent = "Saved.";
+                msg.className = "apt-msg ok";
+                setTimeout(() => { msg.textContent = ""; }, 2000);
+            } catch (e) {
+                msg.textContent = "Save failed.";
+                msg.className = "apt-msg err";
+            }
+        }
+
         document.addEventListener("DOMContentLoaded", () => {
             document.getElementById("callsign-input").addEventListener("keydown", e => {
                 if (e.key === "Enter") lookupAndTrack();
@@ -338,8 +540,13 @@
             document.getElementById("dest-input").addEventListener("keydown", e => {
                 if (e.key === "Enter") searchRoute();
             });
+            document.getElementById("apt-code-input").addEventListener("keydown", e => {
+                if (e.key === "Enter") aptLookup();
+            });
             loadCurrent();
             loadLocation();
+            loadOverrides();
+            loadDisplaySettings();
         });
     </script>
 </body>
