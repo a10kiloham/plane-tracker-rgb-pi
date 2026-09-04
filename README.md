@@ -243,15 +243,19 @@ fully up to date with one command:
 
 ```bash
 ssh <machine>
-sudo git -C /home/robk/plane-tracker-rgb-pi pull --ff-only
-sudo bash /home/robk/plane-tracker-rgb-pi/its-a-plane-python/setup/update-machine.sh
+REPO=/home/robk/plane-tracker-rgb-pi
+sudo git config --global --add safe.directory $REPO
+sudo git -C $REPO fetch
+sudo git -C $REPO checkout origin/main -- its-a-plane-python/setup/update-machine.sh
+sudo bash $REPO/its-a-plane-python/setup/update-machine.sh
 ```
 
-(The first `git pull` fetches the script itself on machines that predate it;
-on a repo not owned by root, run
-`sudo git config --global --add safe.directory /home/robk/plane-tracker-rgb-pi`
-first if the pull complains about dubious ownership — the script handles this
-itself on every later run.)
+(The `fetch` + `checkout` lines bootstrap the script onto machines that
+predate it — a plain `git pull` can abort on local changes, which the script
+itself handles via stash. The `safe.directory` line covers repos whose files
+are owned by a different user than root. Once a machine has the script, a
+bare `sudo bash $REPO/its-a-plane-python/setup/update-machine.sh` is enough —
+it pulls the latest code itself.)
 
 The script is idempotent and handles all fleet variations automatically:
 root- or user-owned repo, venv (`<repo>/.venv`) or system python, and it
