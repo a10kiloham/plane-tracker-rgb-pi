@@ -193,9 +193,11 @@ def test_settings_post_validation(client):
     assert r.status_code == 400
 
 
-def test_settings_post_ignores_masked_secret(client, tmp_path):
+def test_settings_post_rejects_masked_secret(client, tmp_path):
+    # A value containing the mask char is a partial edit of the displayed
+    # mask — refused loudly (400), never stored, never silently dropped.
     r = client.post("/api/settings", json={"FR24_API_KEY": "abcd••••••wxyz"})
-    assert r.status_code == 200
+    assert r.status_code == 400
     stored = json.loads((tmp_path / "settings.json").read_text()) \
         if (tmp_path / "settings.json").exists() else {}
     assert "FR24_API_KEY" not in stored
@@ -219,3 +221,69 @@ def test_blocklist_airports_roundtrip(client, tmp_path, monkeypatch):
     assert r.status_code == 400
     r = client.post("/blocklist/remove", json={"type": "airports", "value": "LAX"})
     assert r.status_code == 200 and r.get_json()["airports"] == []
+
+
+# ─── Regression tests for code-review findings ───────────────────────────────
+
+def test_corrupt_non_utf8_settings_file_does_not_crash_config():
+    tmp = tempfile.mkdtemp()
+    with open(os.path.join(tmp, "settings.json"), "wb") as f:
+        f.write(b"\xff\xfe garbage")
+    out = subprocess.run([sys.executable, "-c", "import config; print(config.BRIGHTNESS)"],
+                         cwd=BASE, env={"PATH": os.environ.get("PATH", ""),
+                                        "PLANE_TRACKER_DATA_DIR": tmp},
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split()[-1] == "100"
+
+
+def test_malformed_number_warns_and_falls_back():
+    tmp = tempfile.mkdtemp()
+    out = subprocess.run([sys.executable, "-c",
+                          "import config; print(config.ZONE_HOME['tl_y'])"],
+                         cwd=BASE, env={"PATH": os.environ.get("PATH", ""),
+                                        "PLANE_TRACKER_DATA_DIR": tmp,
+                                        "ZONE_TL_LAT": "51,595"},
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == "0.0"
+    assert "ZONE_TL_LAT" in out.stdout  # loud warning names the key
+
+
+def test_partial_masked_secret_is_an_error(client):
+    r = client.post("/api/settings", json={"FR24_API_KEY": "abcd••edit••wxyz"})
+    assert r.status_code == 400
+    assert "masked" in r.get_json()["fields"]["FR24_API_KEY"]
+
+
+def test_empty_secret_means_unchanged_and_clear_sentinel_clears(client, tmp_path):
+    r = client.post("/api/settings", json={"FR24_API_KEY": "realkey123456"})
+    assert r.status_code == 200 and r.get_json()["changed"] == 1
+    r = client.post("/api/settings", json={"FR24_API_KEY": ""})   # unchanged
+    assert r.status_code == 200 and r.get_json()["changed"] == 0
+    stored = json.loads((tmp_path / "settings.json").read_text())
+    assert stored["FR24_API_KEY"] == "realkey123456"
+    r = client.post("/api/settings", json={"FR24_API_KEY": "__CLEAR__"})
+    assert r.status_code == 200 and r.get_json()["changed"] == 1
+    stored = json.loads((tmp_path / "settings.json").read_text())
+    assert "FR24_API_KEY" not in stored
+
+
+def test_bad_number_marker_rejected_loudly(client):
+    r = client.post("/api/settings", json={"BRIGHTNESS": "__NOT_A_NUMBER__"})
+    assert r.status_code == 400
+    assert "BRIGHTNESS" in r.get_json()["fields"]
+
+
+def test_service_name_traversal_rejected():
+    _, err = reg.validate("SERVICE_NAME", "../../../etc/passwd")
+    assert err is not None
+    val, err = reg.validate("SERVICE_NAME", "plane-tracker@2")
+    assert err is None and val == "plane-tracker@2"
+
+
+def test_float_range_and_nonfinite_rejected():
+    assert reg.validate("HOME_LAT", "91")[1] is not None
+    assert reg.validate("HOME_LAT", "-90") == ("-90", None)
+    assert reg.validate("HOME_LON", "inf")[1] is not None
+    assert reg.validate("HOME_LON", "nan")[1] is not None

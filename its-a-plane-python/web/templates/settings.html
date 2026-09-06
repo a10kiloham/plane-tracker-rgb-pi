@@ -153,18 +153,32 @@
                 n ? `${n} unsaved change${n > 1 ? "s" : ""}` : "";
         }
 
+        const TRUTHY = new Set(["true", "1", "yes", "on"]);
+
         function inputFor(item) {
             const id = `set-${item.key}`;
             if (item.type === "bool") {
-                const on = (item.effective || "").toLowerCase() === "true";
+                // Accept every spelling config.py's _bool accepts (1/yes/on),
+                // so an env "ATC_ENABLED=1" renders as ON, not OFF.
+                const on = TRUTHY.has((item.effective || "").trim().toLowerCase());
                 return `<label class="toggle"><input type="checkbox" id="${id}" ${on ? "checked" : ""}
-                    onchange="markDirty('${item.key}', this.checked ? 'True' : 'False', this)" />
-                    <span>${on ? "" : ""}</span></label>`;
+                    onchange="markDirty('${item.key}', this.checked ? 'True' : 'False', this)" /></label>`;
             }
             if (item.type === "choice") {
+                const eff = (item.effective || "").trim().toLowerCase();
                 const opts = item.choices.map(c =>
-                    `<option value="${c}" ${c === item.effective ? "selected" : ""}>${c}</option>`).join("");
+                    `<option value="${c}" ${c.toLowerCase() === eff ? "selected" : ""}>${c}</option>`).join("");
                 return `<select id="${id}" onchange="markDirty('${item.key}', this.value, this)">${opts}</select>`;
+            }
+            if (item.is_secret) {
+                // Secrets render EMPTY: blank = keep current. Typing replaces;
+                // the explicit clear link falls back to the env file.
+                const current = item.effective ? `saved: ${item.effective} — leave blank to keep` : "not set";
+                const clearLink = item.source === "ui"
+                    ? ` <a href="#" style="display:inline;font-size:12px;" onclick="clearSecret('${item.key}', this); return false;">clear (use env)</a>` : "";
+                return `<input type="text" id="${id}" value="" autocomplete="off"
+                    placeholder="${current.replace(/"/g, "&quot;")}"
+                    oninput="markDirty('${item.key}', this.value, this)" />${clearLink}`;
             }
             const numeric = item.type === "int" || item.type === "float";
             const t = numeric ? "number" : "text";
@@ -173,9 +187,24 @@
                            (item.max != null ? ` max="${item.max}"` : "");
             const ph = item.type === "time" ? "HH:MM" : (item.default || "");
             const val = item.ui_value !== "" ? item.ui_value : item.effective;
+            // Browsers report "" for unparseable number input (badInput); that
+            // must NOT silently clear a saved value — send a marker the server
+            // rejects with a visible validation error instead.
+            const onin = numeric
+                ? `markDirty('${item.key}', (this.validity && this.validity.badInput) ? '__NOT_A_NUMBER__' : this.value, this)`
+                : `markDirty('${item.key}', this.value, this)`;
             return `<input type="${t}"${step}${minmax} id="${id}" value="${(val || "").replace(/"/g, "&quot;")}"
                 placeholder="${ph.replace(/"/g, "&quot;")}"
-                oninput="markDirty('${item.key}', this.value, this)" />`;
+                oninput="${onin}" />`;
+        }
+
+        function clearSecret(key, el) {
+            DIRTY[key] = "__CLEAR__";
+            el.previousElementSibling.classList.add("dirty");
+            el.textContent = "will use env after save";
+            const n = Object.keys(DIRTY).length;
+            document.getElementById("dirty-count").textContent =
+                n ? `${n} unsaved change${n > 1 ? "s" : ""}` : "";
         }
 
         function render(data) {

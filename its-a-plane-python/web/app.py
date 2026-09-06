@@ -557,7 +557,9 @@ def api_settings():
             stored = json.load(f)
         if not isinstance(stored, dict):
             stored = {}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, ValueError, OSError):
+        # ValueError covers JSONDecodeError and UnicodeDecodeError — a corrupt
+        # file must not take down the page that can repair it.
         stored = {}
 
     if request.method == "GET":
@@ -601,10 +603,17 @@ def api_settings():
         if spec is None:
             errors[key] = "unknown setting"
             continue
-        # Secrets: the UI sends the mask back unchanged when untouched — skip
-        # any value containing the mask character so we never store a mask.
-        if spec["type"] == "secret" and "•" in str(value):
-            continue
+        value = str(value)
+        if spec["type"] == "secret":
+            # Secret inputs render empty ("" = unchanged); clearing to fall
+            # back to env is the explicit CLEAR sentinel. A mask character in
+            # the value means a partial edit of a displayed mask — refuse it
+            # loudly rather than silently storing (or dropping) a broken key.
+            if "•" in value:
+                errors[key] = "contains masked characters — retype the full value"
+                continue
+            if value.strip() == "":
+                continue  # unchanged
         norm, err = reg.validate(key, value)
         if err:
             errors[key] = err
@@ -638,9 +647,24 @@ def api_restart():
     service = getattr(cfg, "SERVICE_NAME", None) or "plane-tracker"
     if not re.match(r"^[A-Za-z0-9@_.-]+$", service):
         return jsonify({"error": "invalid service name"}), 400
+    # Verify the unit actually exists BEFORE claiming success — the restart
+    # itself must be detached (it kills this web app), so it can't report back.
+    try:
+        check = subprocess.run(["systemctl", "cat", service],
+                               capture_output=True, text=True, timeout=10)
+        if check.returncode != 0:
+            return jsonify({"error": f"service '{service}' not found: "
+                                     f"{(check.stderr or '').strip() or 'systemctl error'}"}), 400
+    except FileNotFoundError:
+        return jsonify({"error": "systemctl not available on this host "
+                                 "(Docker? restart the container instead)"}), 400
+    except Exception as e:
+        return jsonify({"error": f"could not verify service: {e}"}), 500
     try:
         subprocess.Popen(
-            ["bash", "-c", f"sleep 1; systemctl restart {service}"],
+            ["bash", "-c",
+             f"sleep 1; systemctl restart {service} "
+             f"|| logger -t plane-tracker-web 'settings restart FAILED for {service}'"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
@@ -651,12 +675,9 @@ def api_restart():
 
 
 def _mask_secret(val):
-    """Mask an API key: show first 4 and last 4 chars only."""
-    if not val:
-        return ""
-    if len(val) > 10:
-        return val[:4] + "*" * (len(val) - 8) + val[-4:]
-    return "****"
+    """Mask an API key (same helper the /settings page uses)."""
+    from utilities.settings_registry import mask_secret
+    return mask_secret(val)
 
 
 @app.get("/api/config")
@@ -1040,6 +1061,9 @@ def api_logs():
 def api_service_file():
     """Contents of the tracker's systemd service file (for log-config hints)."""
     service = getattr(cfg, "SERVICE_NAME", None) or os.environ.get("SERVICE_NAME", "plane-tracker")
+    if not re.match(r"^[A-Za-z0-9@_.-]+$", service):
+        return jsonify({"content": None, "path": None,
+                        "error": "invalid service name"}), 400
     path = f"/etc/systemd/system/{service}.service"
     try:
         with open(path, "r") as f:
@@ -1533,4 +1557,4 @@ if _ATC_ENABLED:
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    app.run(host="0.0.0.0", port=getattr(cfg, "ATC_RELAY_PORT", 8080), debug=False)

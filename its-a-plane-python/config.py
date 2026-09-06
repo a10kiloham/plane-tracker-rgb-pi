@@ -43,7 +43,10 @@ def _load_ui_settings():
             for k, v in raw.items()
             if v is not None and str(v).strip() != ""
         }
-    except (FileNotFoundError, json.JSONDecodeError, PermissionError, OSError):
+    except (FileNotFoundError, ValueError, PermissionError, OSError):
+        # ValueError covers JSONDecodeError and UnicodeDecodeError — a corrupt
+        # settings.json must never stop the tracker (or the web UI needed to
+        # repair it) from booting.
         return {}
 
 
@@ -62,16 +65,20 @@ def _bool(val: str) -> bool:
 
 
 def _int(name: str, default: int) -> int:
+    raw = _get(name, str(default))
     try:
-        return int(str(_get(name, str(default))).strip())
+        return int(str(raw).strip())
     except (ValueError, TypeError):
+        print(f"[Config] {name}={raw!r} is not a whole number — using {default}")
         return default
 
 
 def _float(name: str, default: float) -> float:
+    raw = _get(name, str(default))
     try:
-        return float(str(_get(name, str(default))).strip())
+        return float(str(raw).strip())
     except (ValueError, TypeError):
+        print(f"[Config] {name}={raw!r} is not a number — using {default}")
         return default
 
 

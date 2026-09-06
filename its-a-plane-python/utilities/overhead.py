@@ -966,10 +966,12 @@ class Overhead:
             # Blocked airports: cheap pre-filter on the raw feed's route (saves
             # a detail fetch); re-checked after full route resolution below.
             if blocklist["airports"]:
+                before = len(flights)
                 flights = [f for f in flights
                            if not is_blocked_airport(f.origin_airport_iata,
                                                      f.destination_airport_iata,
                                                      blocklist)]
+                stats["airport_blocked"] += before - len(flights)
             stats["zone_filtered"] = len(flights)
             flights.sort(key=lambda f: distance_from_flight_to_home(f))
             flights = flights[:MAX_FLIGHT_LOOKUP]
