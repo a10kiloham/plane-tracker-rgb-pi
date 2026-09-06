@@ -525,24 +525,29 @@ def log_flight_count(callsign, entry=None):
 # --- Plane blocklist (concept from upstream c0wsaysmoo/plane-tracker-rgb-pi,
 #     commit 128d3d3 "can block individual planes from showing up") ---
 
-_blocklist_cache = {"mtime": None, "callsigns": [], "registrations": []}
+_blocklist_cache = {"mtime": None, "callsigns": [], "registrations": [],
+                    "airports": []}
 
 
 def load_blocklist():
-    """Return {"callsigns": [...], "registrations": [...]} from blocked_planes.json.
+    """Return {"callsigns": [...], "registrations": [...], "airports": [...]}
+    from blocked_planes.json.
 
     Entries are normalized to uppercase. The file is only re-read when its
     mtime changes (so at most once per poll cycle); a missing or corrupt file
-    yields an empty blocklist. Managed via the web UI (/blocklist).
+    yields an empty blocklist. Managed via the web UI (/settings, /blocklist).
+    A file without the "airports" key (written by an older version) simply
+    yields an empty airports list.
     """
     try:
         mtime = os.path.getmtime(BLOCKLIST_FILE)
     except OSError:
-        _blocklist_cache.update(mtime=None, callsigns=[], registrations=[])
-        return {"callsigns": [], "registrations": []}
+        _blocklist_cache.update(mtime=None, callsigns=[], registrations=[],
+                                airports=[])
+        return {"callsigns": [], "registrations": [], "airports": []}
 
     if _blocklist_cache["mtime"] != mtime:
-        callsigns, registrations = [], []
+        callsigns, registrations, airports = [], [], []
         try:
             with open(BLOCKLIST_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -551,13 +556,16 @@ def load_blocklist():
                              for c in data.get("callsigns", []) if str(c).strip()]
                 registrations = [str(r).strip().upper()
                                  for r in data.get("registrations", []) if str(r).strip()]
+                airports = [str(a).strip().upper()
+                            for a in data.get("airports", []) if str(a).strip()]
         except (json.JSONDecodeError, ValueError, OSError) as e:
             logger.warning(f"Blocklist unreadable ({e}) — treating as empty")
         _blocklist_cache.update(mtime=mtime, callsigns=callsigns,
-                                registrations=registrations)
+                                registrations=registrations, airports=airports)
 
     return {"callsigns": list(_blocklist_cache["callsigns"]),
-            "registrations": list(_blocklist_cache["registrations"])}
+            "registrations": list(_blocklist_cache["registrations"]),
+            "airports": list(_blocklist_cache.get("airports", []))}
 
 
 def is_blocked(callsign, registration, blocklist):
@@ -582,6 +590,22 @@ def is_blocked(callsign, registration, blocklist):
         if entry and (reg == entry or cs == entry):
             return True
     return False
+
+
+def is_blocked_airport(origin, destination, blocklist):
+    """True if either endpoint of this flight is a blocked airport code.
+
+    Exact, case-insensitive match against the codes the tracker displays
+    (usually IATA, but whatever the feed carries — block what you see).
+    Checked twice per flight: cheaply against the raw feed's route before
+    spending a detail fetch, and again after the route is fully resolved.
+    """
+    airports = blocklist.get("airports", [])
+    if not airports:
+        return False
+    o = (origin or "").strip().upper()
+    d = (destination or "").strip().upper()
+    return (o != "" and o in airports) or (d != "" and d in airports)
 
 
 # --- Display settings (web UI checkboxes: unknown-route filters) ---
@@ -839,6 +863,7 @@ class Overhead:
             f"(min={MIN_ALTITUDE}ft, max={MAX_ALTITUDE}ft)",
             f"│ Flights processed:     {stats.get('flights_processed', 0)}",
             f"│ Unknown-route hidden:  {stats.get('unknown_filtered', 0)}",
+            f"│ Blocked-airport hidden:{stats.get('airport_blocked', 0)}",
             f"│ Details fetched (API): {stats.get('details_fetched', 0)}",
             "├─── Data Sources ───────────────────────────────────────",
             f"│ Local airports used:   {stats.get('airport_lookups', 0)} "
@@ -916,6 +941,7 @@ class Overhead:
             "zone_raw": 0,
             "zone_filtered": 0,
             "unknown_filtered": 0,
+            "airport_blocked": 0,
             "flights_processed": 0,
             "details_fetched": 0,
             "airport_lookups": 0,
@@ -937,6 +963,13 @@ class Overhead:
             if blocklist["callsigns"] or blocklist["registrations"]:
                 flights = [f for f in flights
                            if not is_blocked(f.callsign, f.registration, blocklist)]
+            # Blocked airports: cheap pre-filter on the raw feed's route (saves
+            # a detail fetch); re-checked after full route resolution below.
+            if blocklist["airports"]:
+                flights = [f for f in flights
+                           if not is_blocked_airport(f.origin_airport_iata,
+                                                     f.destination_airport_iata,
+                                                     blocklist)]
             stats["zone_filtered"] = len(flights)
             flights.sort(key=lambda f: distance_from_flight_to_home(f))
             flights = flights[:MAX_FLIGHT_LOOKUP]
@@ -1037,6 +1070,12 @@ class Overhead:
                                             plane = fs["aircraft"]
                             except Exception:
                                 pass
+
+                        # Blocked airports: authoritative check on the fully
+                        # resolved route (the raw feed's codes can be empty).
+                        if is_blocked_airport(origin, destination, blocklist):
+                            stats["airport_blocked"] += 1
+                            break  # skip this flight entirely
 
                         # Unknown-route filters (dashboard checkboxes).
                         # Applied after every route source (gRPC + FlightStats)

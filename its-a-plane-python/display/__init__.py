@@ -90,7 +90,10 @@ class Display(
 ):
     def __init__(self):
         options = RGBMatrixOptions()
-        bonnet_type = os.environ.get("BONNET_TYPE", "single").lower()
+        try:
+            from config import BONNET_TYPE as bonnet_type
+        except (ImportError, ModuleNotFoundError):
+            bonnet_type = os.environ.get("BONNET_TYPE", "single").lower()
         if bonnet_type == "triple":
             options.hardware_mapping = "regular"
         else:

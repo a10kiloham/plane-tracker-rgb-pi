@@ -38,7 +38,7 @@ def blocklist_file(tmp_path, monkeypatch):
     path = tmp_path / "blocked_planes.json"
     monkeypatch.setattr(overhead, "BLOCKLIST_FILE", str(path))
     monkeypatch.setattr(overhead, "_blocklist_cache",
-                        {"mtime": None, "callsigns": [], "registrations": []})
+                        {"mtime": None, "callsigns": [], "registrations": [], "airports": []})
     return path
 
 
@@ -52,17 +52,17 @@ def write_blocklist(path, data):
 class TestLoadBlocklist:
     def test_missing_file_returns_empty(self, blocklist_file):
         result = load_blocklist()
-        assert result == {"callsigns": [], "registrations": []}
+        assert result == {"callsigns": [], "registrations": [], "airports": []}
 
     def test_corrupt_file_returns_empty(self, blocklist_file):
         write_blocklist(blocklist_file, "{not valid json!!!")
         result = load_blocklist()
-        assert result == {"callsigns": [], "registrations": []}
+        assert result == {"callsigns": [], "registrations": [], "airports": []}
 
     def test_non_dict_json_returns_empty(self, blocklist_file):
         write_blocklist(blocklist_file, ["UAL123"])
         result = load_blocklist()
-        assert result == {"callsigns": [], "registrations": []}
+        assert result == {"callsigns": [], "registrations": [], "airports": []}
 
     def test_normalizes_case_and_whitespace(self, blocklist_file):
         write_blocklist(blocklist_file, {
@@ -76,7 +76,7 @@ class TestLoadBlocklist:
     def test_missing_keys_tolerated(self, blocklist_file):
         write_blocklist(blocklist_file, {"callsigns": ["UAL1"]})
         result = load_blocklist()
-        assert result == {"callsigns": ["UAL1"], "registrations": []}
+        assert result == {"callsigns": ["UAL1"], "registrations": [], "airports": []}
 
     def test_blank_entries_dropped(self, blocklist_file):
         write_blocklist(blocklist_file, {"callsigns": ["", "  ", "DAL5"]})
@@ -103,7 +103,7 @@ class TestLoadBlocklist:
         write_blocklist(blocklist_file, {"callsigns": ["UAL1"]})
         assert load_blocklist()["callsigns"] == ["UAL1"]
         os.unlink(blocklist_file)
-        assert load_blocklist() == {"callsigns": [], "registrations": []}
+        assert load_blocklist() == {"callsigns": [], "registrations": [], "airports": []}
 
 
 # ── is_blocked ────────────────────────────────────────────────────────────────
@@ -172,7 +172,7 @@ class TestBlocklistRoutes:
     def test_json_empty(self, client):
         resp = client.get("/blocklist/json")
         assert resp.status_code == 200
-        assert resp.get_json() == {"callsigns": [], "registrations": []}
+        assert resp.get_json() == {"callsigns": [], "registrations": [], "airports": []}
 
     def test_add_and_remove_callsign(self, client, blocklist_file):
         resp = client.post("/blocklist/add",

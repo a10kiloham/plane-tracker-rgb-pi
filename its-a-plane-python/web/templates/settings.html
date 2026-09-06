@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Settings — Flight Tracker</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <style>
+        body { font-family: Arial; padding: 20px 20px 90px; background: #f5f5f5; margin: 0; }
+        h1 { margin: 0 0 4px 0; }
+        .subtitle { color: #777; font-size: 14px; margin-bottom: 18px; }
+        a.back { color: #0066cc; font-size: 15px; text-decoration: none; }
+        .card {
+            margin: 18px 0;
+            padding: 16px 20px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            max-width: 680px;
+        }
+        .card h2 { margin: 0 0 4px 0; font-size: 17px; }
+        .card .card-sub { color: #888; font-size: 13px; margin: 0 0 12px 0; }
+        .setting {
+            display: grid;
+            grid-template-columns: 220px 1fr 70px;
+            gap: 10px;
+            align-items: center;
+            padding: 7px 0;
+            border-top: 1px solid #f0f0f0;
+        }
+        .setting:first-of-type { border-top: none; }
+        .s-label { font-size: 14px; color: #333; }
+        .s-help { font-size: 12px; color: #999; margin-top: 2px; }
+        .s-input input[type=text], .s-input input[type=number], .s-input select {
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 14px;
+            padding: 6px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: white;
+        }
+        .s-input input.dirty, .s-input select.dirty { border-color: #e07000; background: #fff8f0; }
+        .s-input .toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+        .badge {
+            font-size: 11px;
+            border-radius: 10px;
+            padding: 2px 9px;
+            text-align: center;
+            white-space: nowrap;
+            justify-self: end;
+        }
+        .badge.ui { background: #e07000; color: white; }
+        .badge.env { background: #2d6a4f; color: white; }
+        .badge.default { background: #e8e8e8; color: #888; }
+        .env-hint { font-size: 11px; color: #aaa; margin-top: 2px; }
+
+        .savebar {
+            position: fixed;
+            left: 0; right: 0; bottom: 0;
+            background: white;
+            border-top: 1px solid #ddd;
+            padding: 12px 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
+        }
+        .savebar button {
+            font-size: 15px;
+            padding: 9px 18px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background: #0066cc;
+            color: white;
+        }
+        .savebar button.restart { background: #e07000; }
+        .savebar button:disabled { background: #aaa; cursor: default; }
+        #save-msg { font-size: 14px; min-height: 16px; }
+        #save-msg.ok { color: #2d6a4f; }
+        #save-msg.err { color: #721c24; }
+        #dirty-count { font-size: 13px; color: #e07000; }
+
+        .bl-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+        .bl-row input {
+            font-size: 15px; padding: 6px 10px; width: 130px;
+            text-transform: uppercase; border: 1px solid #ccc; border-radius: 4px;
+        }
+        .bl-row button {
+            font-size: 14px; padding: 7px 14px; cursor: pointer;
+            border: none; border-radius: 4px; background: #0066cc; color: white;
+        }
+        .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+        .chip {
+            display: inline-flex; align-items: center; gap: 7px;
+            background: #f0f4f8; border: 1px solid #d5dde5;
+            border-radius: 14px; padding: 4px 6px 4px 12px; font-size: 14px;
+        }
+        .chip button {
+            border: none; background: #b23b3b; color: white; cursor: pointer;
+            border-radius: 50%; width: 20px; height: 20px; line-height: 18px;
+            font-size: 12px; padding: 0;
+        }
+        .bl-msg { font-size: 13px; margin-top: 8px; min-height: 15px; }
+        .bl-msg.ok { color: #2d6a4f; }
+        .bl-msg.err { color: #721c24; }
+        .note { font-size: 13px; color: #888; margin-top: 10px; }
+        @media (max-width: 640px) {
+            .setting { grid-template-columns: 1fr; gap: 4px; }
+            .badge { justify-self: start; }
+        }
+    </style>
+</head>
+<body>
+    <a class="back" href="/">← Dashboard</a>
+    <h1>Settings</h1>
+    <p class="subtitle">
+        Values saved here are stored on the device and take precedence over the
+        environment file (<code>/etc/plane-tracker.env</code>), which remains the
+        fallback for anything left blank. Changes apply after a restart.
+    </p>
+
+    <div class="card">
+        <h2>Blocked Airports</h2>
+        <p class="card-sub">Flights to or from these airport codes never appear on the display. Applies within one poll cycle — no restart needed.</p>
+        <div class="bl-row">
+            <input type="text" id="bl-airport-input" placeholder="e.g. LAX" maxlength="4" />
+            <button onclick="blAdd()">Block</button>
+        </div>
+        <div class="chips" id="bl-airport-chips"></div>
+        <div class="bl-msg" id="bl-msg"></div>
+        <p class="note">Use the code as shown on the display (usually IATA, e.g. LAX — not KLAX).
+        Individual aircraft are blocked on the <a href="/blocklist" style="display:inline;font-size:13px;">plane blocklist</a>.</p>
+    </div>
+
+    <div id="settings-root"><div class="card">Loading settings…</div></div>
+
+    <div class="savebar">
+        <button id="btn-save" onclick="saveSettings(false)">Save</button>
+        <button id="btn-save-restart" class="restart" onclick="saveSettings(true)">Save &amp; Restart</button>
+        <span id="dirty-count"></span>
+        <span id="save-msg"></span>
+    </div>
+
+    <script>
+        let DIRTY = {};      // key -> value (string) pending save
+        let SPECS = {};      // key -> spec
+
+        function markDirty(key, value, el) {
+            DIRTY[key] = value;
+            el.classList.add("dirty");
+            const n = Object.keys(DIRTY).length;
+            document.getElementById("dirty-count").textContent =
+                n ? `${n} unsaved change${n > 1 ? "s" : ""}` : "";
+        }
+
+        function inputFor(item) {
+            const id = `set-${item.key}`;
+            if (item.type === "bool") {
+                const on = (item.effective || "").toLowerCase() === "true";
+                return `<label class="toggle"><input type="checkbox" id="${id}" ${on ? "checked" : ""}
+                    onchange="markDirty('${item.key}', this.checked ? 'True' : 'False', this)" />
+                    <span>${on ? "" : ""}</span></label>`;
+            }
+            if (item.type === "choice") {
+                const opts = item.choices.map(c =>
+                    `<option value="${c}" ${c === item.effective ? "selected" : ""}>${c}</option>`).join("");
+                return `<select id="${id}" onchange="markDirty('${item.key}', this.value, this)">${opts}</select>`;
+            }
+            const numeric = item.type === "int" || item.type === "float";
+            const t = numeric ? "number" : "text";
+            const step = item.type === "float" ? ` step="any"` : "";
+            const minmax = (item.min != null ? ` min="${item.min}"` : "") +
+                           (item.max != null ? ` max="${item.max}"` : "");
+            const ph = item.type === "time" ? "HH:MM" : (item.default || "");
+            const val = item.ui_value !== "" ? item.ui_value : item.effective;
+            return `<input type="${t}"${step}${minmax} id="${id}" value="${(val || "").replace(/"/g, "&quot;")}"
+                placeholder="${ph.replace(/"/g, "&quot;")}"
+                oninput="markDirty('${item.key}', this.value, this)" />`;
+        }
+
+        function render(data) {
+            let html = "";
+            for (const group of data.groups) {
+                html += `<div class="card"><h2>${group.name}</h2>`;
+                if (group.name === "API Keys")
+                    html += `<p class="card-sub">Stored values are masked; type a new value to replace one, or clear the field to fall back to the env file.</p>`;
+                for (const item of group.items) {
+                    SPECS[item.key] = item;
+                    const badgeClass = item.source;
+                    const badgeText = item.source === "ui" ? "UI" : item.source === "env" ? "env" : "default";
+                    const envHint = (item.source === "ui" && item.env_value)
+                        ? `<div class="env-hint">env fallback: ${item.env_value}</div>` : "";
+                    html += `<div class="setting">
+                        <div><div class="s-label">${item.label}</div>
+                             ${item.help ? `<div class="s-help">${item.help}</div>` : ""}</div>
+                        <div class="s-input">${inputFor(item)}${envHint}</div>
+                        <div class="badge ${badgeClass}" title="Where the current value comes from">${badgeText}</div>
+                    </div>`;
+                }
+                html += `</div>`;
+            }
+            document.getElementById("settings-root").innerHTML = html;
+        }
+
+        async function loadSettings() {
+            try {
+                const res = await fetch("/api/settings");
+                render(await res.json());
+            } catch (e) {
+                document.getElementById("settings-root").innerHTML =
+                    `<div class="card">Failed to load settings — check your connection.</div>`;
+            }
+        }
+
+        function setMsg(text, ok) {
+            const el = document.getElementById("save-msg");
+            el.textContent = text;
+            el.className = ok ? "ok" : "err";
+        }
+
+        async function saveSettings(restart) {
+            if (Object.keys(DIRTY).length === 0 && !restart) { setMsg("Nothing to save.", true); return; }
+            const btns = [document.getElementById("btn-save"), document.getElementById("btn-save-restart")];
+            btns.forEach(b => b.disabled = true);
+            try {
+                if (Object.keys(DIRTY).length > 0) {
+                    const res = await fetch("/api/settings", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(DIRTY)
+                    });
+                    const data = await res.json();
+                    if (data.error) {
+                        const fields = data.fields
+                            ? Object.entries(data.fields).map(([k, v]) => `${SPECS[k] ? SPECS[k].label : k}: ${v}`).join("; ")
+                            : data.error;
+                        setMsg(fields, false);
+                        btns.forEach(b => b.disabled = false);
+                        return;
+                    }
+                    setMsg(data.message + (restart ? "" : " — restart to apply."), true);
+                    DIRTY = {};
+                    document.getElementById("dirty-count").textContent = "";
+                }
+                if (restart) {
+                    const res = await fetch("/api/restart", { method: "POST" });
+                    const data = await res.json();
+                    setMsg(data.message || data.error, !data.error);
+                    if (!data.error) setTimeout(() => location.reload(), 15000);
+                } else {
+                    await loadSettings();
+                }
+            } catch (e) {
+                setMsg("Save failed — check your connection.", false);
+            }
+            btns.forEach(b => b.disabled = false);
+        }
+
+        // ---- Blocked airports ----
+
+        function blMsg(text, ok) {
+            const el = document.getElementById("bl-msg");
+            el.textContent = text;
+            el.className = "bl-msg " + (ok ? "ok" : "err");
+        }
+
+        function renderChips(airports) {
+            document.getElementById("bl-airport-chips").innerHTML = (airports || [])
+                .map(a => `<span class="chip">${a}<button title="Unblock" onclick="blRemove('${a}')">✕</button></span>`)
+                .join("") || `<span style="color:#aaa;font-size:13px;">No airports blocked.</span>`;
+        }
+
+        async function blLoad() {
+            try {
+                const res = await fetch("/blocklist/json");
+                renderChips((await res.json()).airports);
+            } catch (e) { /* non-fatal */ }
+        }
+
+        async function blAdd() {
+            const input = document.getElementById("bl-airport-input");
+            const value = input.value.trim().toUpperCase();
+            if (!value) return;
+            try {
+                const res = await fetch("/blocklist/add", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ type: "airports", value })
+                });
+                const data = await res.json();
+                if (data.error) { blMsg(data.error, false); return; }
+                blMsg(data.message, true);
+                input.value = "";
+                renderChips(data.airports);
+            } catch (e) { blMsg("Failed — check your connection.", false); }
+        }
+
+        async function blRemove(value) {
+            try {
+                const res = await fetch("/blocklist/remove", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ type: "airports", value })
+                });
+                const data = await res.json();
+                if (data.error) { blMsg(data.error, false); return; }
+                blMsg(data.message, true);
+                renderChips(data.airports);
+            } catch (e) { blMsg("Failed — check your connection.", false); }
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+            document.getElementById("bl-airport-input").addEventListener("keydown", e => {
+                if (e.key === "Enter") blAdd();
+            });
+            loadSettings();
+            blLoad();
+        });
+    </script>
+</body>
+</html>
