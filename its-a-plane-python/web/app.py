@@ -12,6 +12,7 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+import config as cfg
 from utilities.fr24_client import FR24Client
 
 # Singleton FR24Client shared across all web requests (shares cache + rate limiter)
@@ -527,7 +528,126 @@ def maps(filename):
 
 @app.get("/config")
 def config_page():
-    return render_template("config.html")
+    # The read-only config viewer was replaced by the editable /settings page.
+    from flask import redirect
+    return redirect("/settings", code=302)
+
+
+@app.get("/settings")
+def settings_page():
+    return render_template("settings.html")
+
+
+@app.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    """The /settings page backend.
+
+    GET  → every registered setting with its UI value, environment value and
+           which one is in effect (secrets masked).
+    POST → {"KEY": "value", ...}: validated and written to settings.json in
+           the data dir. An empty string clears the UI value so the
+           environment (or default) applies again. Values take effect after
+           a service restart (POST /api/restart).
+    """
+    from utilities import settings_registry as reg
+
+    settings_file = cfg.SETTINGS_FILE
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            stored = json.load(f)
+        if not isinstance(stored, dict):
+            stored = {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        stored = {}
+
+    if request.method == "GET":
+        groups = {}
+        for spec in reg.SETTINGS:
+            key = spec["key"]
+            secret = spec["type"] == "secret"
+            ui_val = str(stored.get(key, "")).strip()
+            env_val = os.environ.get(key, "")
+            effective = ui_val or env_val or spec["default"]
+            source = "ui" if ui_val else ("env" if env_val else "default")
+            item = {
+                "key": key,
+                "label": spec["label"],
+                "type": spec["type"],
+                "choices": spec.get("choices"),
+                "default": spec["default"],
+                "help": spec.get("help", ""),
+                "min": spec.get("min"),
+                "max": spec.get("max"),
+                "source": source,
+                "ui_value": reg.mask_secret(ui_val) if secret else ui_val,
+                "env_value": reg.mask_secret(env_val) if secret else env_val,
+                "effective": reg.mask_secret(effective) if secret else effective,
+                "is_secret": secret,
+            }
+            groups.setdefault(spec["group"], []).append(item)
+        return jsonify({
+            "groups": [{"name": g, "items": groups.get(g, [])}
+                       for g in reg.GROUP_ORDER if g in groups],
+            "settings_file": settings_file,
+        })
+
+    data = request.get_json(force=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "expected a JSON object"}), 400
+
+    errors, changed = {}, 0
+    for key, value in data.items():
+        spec = reg.get(key)
+        if spec is None:
+            errors[key] = "unknown setting"
+            continue
+        # Secrets: the UI sends the mask back unchanged when untouched — skip
+        # any value containing the mask character so we never store a mask.
+        if spec["type"] == "secret" and "•" in str(value):
+            continue
+        norm, err = reg.validate(key, value)
+        if err:
+            errors[key] = err
+            continue
+        if norm == "":
+            if key in stored:
+                del stored[key]
+                changed += 1
+        elif str(stored.get(key, "")) != norm:
+            stored[key] = norm
+            changed += 1
+
+    if errors:
+        return jsonify({"error": "validation failed", "fields": errors}), 400
+
+    if changed:
+        os.makedirs(os.path.dirname(settings_file), exist_ok=True)
+        tmp = settings_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(stored, f, indent=4, sort_keys=True)
+        os.replace(tmp, settings_file)
+
+    return jsonify({"message": f"Saved {changed} change(s)" if changed else "No changes",
+                    "changed": changed, "restart_needed": changed > 0})
+
+
+@app.post("/api/restart")
+def api_restart():
+    """Restart the tracker service (detached, so this response can complete —
+    restarting also restarts this web app)."""
+    service = getattr(cfg, "SERVICE_NAME", None) or "plane-tracker"
+    if not re.match(r"^[A-Za-z0-9@_.-]+$", service):
+        return jsonify({"error": "invalid service name"}), 400
+    try:
+        subprocess.Popen(
+            ["bash", "-c", f"sleep 1; systemctl restart {service}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        return jsonify({"error": f"restart failed: {e}"}), 500
+    return jsonify({"message": f"Restarting {service} — the display will blank "
+                               "for ~10 seconds and this page will reconnect."})
 
 
 def _mask_secret(val):
@@ -552,7 +672,7 @@ def api_config_get():
 
     SECRET_KEYS = {"FR24_API_KEY", "TOMORROW_API_KEY", "AIRLABS_API_KEY"}
 
-    result = {"config_source": "environment"}
+    result = {"config_source": "settings.json + environment"}
     for key in [
         "HOME_LAT", "HOME_LON",
         "ZONE_TL_LAT", "ZONE_TL_LON", "ZONE_BR_LAT", "ZONE_BR_LON",
@@ -607,7 +727,7 @@ def api_config_get():
 @app.get("/api/system")
 def api_system():
     """System status: uptime, CPU temp."""
-    info = {"uptime": "", "cpu_temp": "", "config_source": "environment"}
+    info = {"uptime": "", "cpu_temp": "", "config_source": "settings.json + environment"}
 
     # Uptime (Linux)
     try:
@@ -642,7 +762,7 @@ def api_system():
 
     # Service uptime
     try:
-        service = os.environ.get("SERVICE_NAME", "flight-tracker")
+        service = getattr(cfg, "SERVICE_NAME", None) or os.environ.get("SERVICE_NAME", "plane-tracker")
         result = subprocess.run(
             ["systemctl", "show", service, "--property=ActiveEnterTimestamp"],
             capture_output=True, text=True, timeout=5
@@ -674,15 +794,7 @@ def api_system():
     return jsonify(info)
 
 
-@app.post("/api/restart")
-def api_restart():
-    """Restart the flight-tracker service via systemctl."""
-    service = os.environ.get("SERVICE_NAME", "flight-tracker")
-    try:
-        subprocess.Popen(["sudo", "systemctl", "restart", service])
-        return jsonify({"status": "restarting", "service": service})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# (the /api/restart route lives with the /settings API above)
 
 
 # ---- WiFi Management (concept from c0wsaysmoo/plane-tracker-rgb-pi) ----
@@ -907,7 +1019,7 @@ def logs_page():
 @app.get("/api/logs")
 def api_logs():
     """Recent journalctl lines for the tracker service (SERVICE_NAME env)."""
-    service = os.environ.get("SERVICE_NAME", "flight-tracker")
+    service = getattr(cfg, "SERVICE_NAME", None) or os.environ.get("SERVICE_NAME", "plane-tracker")
     since = request.args.get("since", "")
     n = request.args.get("n", "500")
     if not re.match(r"^\d{1,5}$", n):
@@ -927,7 +1039,7 @@ def api_logs():
 @app.get("/api/service-file")
 def api_service_file():
     """Contents of the tracker's systemd service file (for log-config hints)."""
-    service = os.environ.get("SERVICE_NAME", "flight-tracker")
+    service = getattr(cfg, "SERVICE_NAME", None) or os.environ.get("SERVICE_NAME", "plane-tracker")
     path = f"/etc/systemd/system/{service}.service"
     try:
         with open(path, "r") as f:
@@ -938,17 +1050,23 @@ def api_service_file():
 
 # ---- Plane blocklist (concept from c0wsaysmoo/plane-tracker-rgb-pi 128d3d3) ----
 
-_BLOCK_TYPES = {"callsigns", "registrations"}
+_BLOCK_TYPES = {"callsigns", "registrations", "airports"}
 # Callsigns may end with "*" for prefix matching; registrations may not.
 _BLOCK_CALLSIGN_RE = re.compile(r"^[A-Z0-9-]{2,10}\*?$")
 _BLOCK_REG_RE = re.compile(r"^[A-Z0-9-]{2,10}$")
+# Airport codes: IATA/local (3) or ICAO (4)
+_BLOCK_AIRPORT_RE = re.compile(r"^[A-Z0-9]{3,4}$")
 
 
 def _validate_block_entry(kind, value):
     """Return (normalized_value, error_message_or_None)."""
     value = (value or "").strip().upper()
     if kind not in _BLOCK_TYPES:
-        return value, "type must be 'callsigns' or 'registrations'"
+        return value, "type must be 'callsigns', 'registrations' or 'airports'"
+    if kind == "airports":
+        if not _BLOCK_AIRPORT_RE.match(value):
+            return value, "3-4 letters/digits (the code shown on the display, e.g. LAX)"
+        return value, None
     pattern = _BLOCK_CALLSIGN_RE if kind == "callsigns" else _BLOCK_REG_RE
     if not pattern.match(value):
         return value, ("2-10 letters/digits" +

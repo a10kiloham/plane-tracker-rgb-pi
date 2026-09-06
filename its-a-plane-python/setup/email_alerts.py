@@ -24,8 +24,11 @@ def _send(subject: str, body: str, attachment_path: Optional[str] = None):
     if not EMAIL.strip():
         return
 
-    sender = os.environ.get("EMAIL_SENDER", "flight.tracker.alerts2025@gmail.com")
-    password = os.environ.get("EMAIL_PASSWORD", "")
+    try:
+        from config import EMAIL_SENDER as sender, EMAIL_PASSWORD as password
+    except (ImportError, ModuleNotFoundError):
+        sender = os.environ.get("EMAIL_SENDER", "flight.tracker.alerts2025@gmail.com")
+        password = os.environ.get("EMAIL_PASSWORD", "")
     receiver = EMAIL
 
     if not password:
