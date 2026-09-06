@@ -34,18 +34,22 @@ SETTINGS = [
 
     # --- Location ---
     dict(key="HOME_LAT", group="Location", label="Home latitude", type="float",
-         default="0.0", help="Used for distances and airport-code disambiguation."),
+         default="0.0", min=-90, max=90,
+         help="Used for distances and airport-code disambiguation."),
     dict(key="HOME_LON", group="Location", label="Home longitude", type="float",
-         default="0.0", help=""),
+         default="0.0", min=-180, max=180, help=""),
     dict(key="ZONE_TL_LAT", group="Location", label="Zone north edge (lat)",
-         type="float", default="0.0",
+         type="float", default="0.0", min=-90, max=90,
          help="Bounding box for overhead detection — top-left corner latitude."),
     dict(key="ZONE_TL_LON", group="Location", label="Zone west edge (lon)",
-         type="float", default="0.0", help="Top-left corner longitude."),
+         type="float", default="0.0", min=-180, max=180,
+         help="Top-left corner longitude."),
     dict(key="ZONE_BR_LAT", group="Location", label="Zone south edge (lat)",
-         type="float", default="0.0", help="Bottom-right corner latitude."),
+         type="float", default="0.0", min=-90, max=90,
+         help="Bottom-right corner latitude."),
     dict(key="ZONE_BR_LON", group="Location", label="Zone east edge (lon)",
-         type="float", default="0.0", help="Bottom-right corner longitude."),
+         type="float", default="0.0", min=-180, max=180,
+         help="Bottom-right corner longitude."),
     dict(key="JOURNEY_CODE_SELECTED", group="Location", label="Home airport code",
          type="str", default="", help="Your local airport IATA code (e.g. ORD)."),
 
@@ -115,14 +119,19 @@ SETTINGS = [
          default="False", help="LiveATC streaming — controls appear on the /atc page."),
     dict(key="ATC_MODE", group="ATC Audio", label="Startup mode", type="choice",
          choices=["auto", "manual", "off"], default="auto",
-         help="auto follows overhead traffic; manual stays on the station below."),
+         help="First run only — after that, runtime changes made on the /atc "
+              "page persist and win. auto follows overhead traffic."),
     dict(key="ATC_STATION", group="ATC Audio", label="Manual station", type="str",
-         default="", help='LiveATC mount for manual mode (e.g. "kjfk_twr").'),
+         default="",
+         help='First run only; change live on the /atc page. LiveATC mount '
+              'like "kjfk_twr".'),
     dict(key="ATC_OUTPUT", group="ATC Audio", label="Audio output", type="str",
          default="usb",
-         help='"usb", "browser", "chromecast:<uuid>" or "airplay:<id>".'),
+         help='First run only; change live on the /atc page. "usb", "browser", '
+              '"chromecast:<uuid>" or "airplay:<id>".'),
     dict(key="ATC_VOLUME", group="ATC Audio", label="Volume", type="int",
-         default="70", min=0, max=100, help=""),
+         default="70", min=0, max=100,
+         help="First run only; change live on the /atc page."),
     dict(key="ATC_QUIET_START", group="ATC Audio", label="Quiet from", type="time",
          default="", allow_blank=True,
          help="Blank = use the display night window."),
@@ -155,7 +164,9 @@ SETTINGS = [
          type="int", default="90", min=1, max=3650, help=""),
     dict(key="SERVICE_NAME", group="Advanced", label="systemd service name",
          type="str", default="plane-tracker",
-         help="Used by the journal log viewer."),
+         pattern=r"^[A-Za-z0-9@_.-]+$",
+         pattern_help="letters, digits, @ _ . - only",
+         help="Used by the journal log viewer and the restart button."),
     dict(key="ATC_RELAY_PORT", group="Advanced", label="Web/relay port", type="int",
          default="8080", min=1, max=65535,
          help="Port this web app listens on (8080 systemd, 6969 Docker)."),
@@ -168,6 +179,10 @@ _BY_KEY = {s["key"]: s for s in SETTINGS}
 
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
 
+# Explicit "remove the UI value, fall back to env" sentinel. Used for secrets,
+# where an empty input means "unchanged" rather than "clear".
+CLEAR = "__CLEAR__"
+
 
 def get(key):
     return _BY_KEY.get(key)
@@ -175,14 +190,17 @@ def get(key):
 
 def validate(key, value):
     """Validate a string value for a registry key.
-    Returns (normalized_value, error_or_None). Empty string is always valid —
-    it clears the UI value so the environment/default applies."""
+    Returns (normalized_value, error_or_None). Empty string (or the CLEAR
+    sentinel) is always valid — it clears the UI value so the
+    environment/default applies."""
     spec = _BY_KEY.get(key)
     if spec is None:
         return value, "unknown setting"
     value = str(value).strip()
-    if value == "":
+    if value == "" or value == CLEAR:
         return "", None
+    if spec.get("pattern") and not re.match(spec["pattern"], value):
+        return value, spec.get("pattern_help", "invalid format")
     t = spec["type"]
     if t == "int":
         try:
@@ -196,9 +214,15 @@ def validate(key, value):
         return str(n), None
     if t == "float":
         try:
-            float(value)
+            f = float(value)
         except ValueError:
             return value, "must be a number"
+        if f != f or f in (float("inf"), float("-inf")):
+            return value, "must be a finite number"
+        if "min" in spec and f < spec["min"]:
+            return value, f"must be at least {spec['min']}"
+        if "max" in spec and f > spec["max"]:
+            return value, f"must be at most {spec['max']}"
         return value, None
     if t == "bool":
         if value.lower() in ("true", "1", "yes", "on"):
