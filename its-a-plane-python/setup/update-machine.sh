@@ -126,8 +126,17 @@ P=$(systemctl show plane-tracker -p MainPID --value)
 tr '\0' '\n' < "/proc/$P/environ" | grep MALLOC_ARENA_MAX \
     || { echo "ERROR: MALLOC_ARENA_MAX missing from process env"; exit 1; }
 awk '/VmRSS|VmData|VmSwap/' "/proc/$P/status"
-code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ || true)
-echo "web UI: HTTP $code"
+# The web port is configurable (ATC_RELAY_PORT via /settings or env) — ask the
+# kernel what port the web app actually bound rather than assuming 8080.
+WEBPID=$(pgrep -f "web/app.py" | head -1 || true)
+PORT=""
+if [ -n "$WEBPID" ]; then
+    PORT=$(ss -tlnp 2>/dev/null | grep "pid=$WEBPID," \
+           | grep -oE '[0-9.*]+:[0-9]+ ' | head -1 | sed 's/.*://; s/ //')
+fi
+PORT="${PORT:-8080}"
+code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT/" || true)
+echo "web UI: HTTP $code (port $PORT)"
 [ "$code" = "200" ] || echo "WARNING: web UI not responding yet (may need a few more seconds)"
 
 echo ""

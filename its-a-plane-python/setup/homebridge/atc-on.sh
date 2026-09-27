@@ -14,9 +14,9 @@ if [ -n "$1" ]; then
   # no-ops select-output and leaves /start on the wrong (e.g. bedroom) target.
   body=$(python3 -c 'import json,sys; print(json.dumps({"output": sys.argv[1]}))' "$1")
   if ! curl -sf -m 5 -X POST -H 'Content-Type: application/json' \
-       -d "$body" http://localhost:8080/api/atc/select-output >/dev/null; then
+       -d "$body" http://localhost:${ATC_WEB_PORT:-8080}/api/atc/select-output >/dev/null; then
     echo "atc-on: select-output failed for '$1' — not starting" >&2
     exit 1
   fi
 fi
-curl -s -m 5 -X POST http://localhost:8080/api/atc/start >/dev/null
+curl -s -m 5 -X POST http://localhost:${ATC_WEB_PORT:-8080}/api/atc/start >/dev/null
