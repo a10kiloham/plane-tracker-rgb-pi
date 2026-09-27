@@ -249,6 +249,10 @@
 
         async function saveSettings(restart) {
             if (Object.keys(DIRTY).length === 0 && !restart) { setMsg("Nothing to save.", true); return; }
+            // If the web port itself is changing, this page must reconnect on
+            // the NEW port after the restart — reloading the old URL would
+            // look like the site died.
+            const newPort = DIRTY["ATC_RELAY_PORT"] || null;
             const btns = [document.getElementById("btn-save"), document.getElementById("btn-save-restart")];
             btns.forEach(b => b.disabled = true);
             try {
@@ -274,10 +278,19 @@
                 if (restart) {
                     const res = await fetch("/api/restart", { method: "POST" });
                     const data = await res.json();
-                    setMsg(data.message || data.error, !data.error);
-                    if (!data.error) setTimeout(() => location.reload(), 15000);
+                    if (!data.error && newPort) {
+                        const target = `${location.protocol}//${location.hostname}` +
+                            (newPort === "80" || newPort === "443" ? "" : `:${newPort}`) +
+                            location.pathname;
+                        setMsg(`${data.message} Moving to port ${newPort}…`, true);
+                        setTimeout(() => { location.href = target; }, 15000);
+                    } else {
+                        setMsg(data.message || data.error, !data.error);
+                        if (!data.error) setTimeout(() => location.reload(), 15000);
+                    }
                 } else {
                     await loadSettings();
+                    if (newPort) setMsg(`Saved — the web UI moves to port ${newPort} after the next restart.`, true);
                 }
             } catch (e) {
                 setMsg("Save failed — check your connection.", false);
