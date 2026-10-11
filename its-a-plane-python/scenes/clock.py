@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from utilities.temperature import grab_forecast
+from utilities.timesync import is_time_synchronized
 from utilities.animator import Animator
 from setup import colours, fonts, frames
 from rgbmatrix import graphics
@@ -65,7 +66,14 @@ class ClockScene(object):
         utc_sunrise, utc_sunset = self.calculate_sunrise_sunset()
         now_utc = datetime.now(timezone.utc)
 
-        if utc_sunrise is None or utc_sunset is None:
+        # A Pi has no hardware clock: if NTP sync is explicitly lost (no
+        # network), the displayed time is untrustworthy — show it in red so
+        # a wrong clock is a visible fault, not a silent lie. (Red also still
+        # means "sunrise/sunset unknown", i.e. the weather API unreachable —
+        # both red states share the same root cause: no connectivity.)
+        if is_time_synchronized() is False:
+            clock_color = colours.RED
+        elif utc_sunrise is None or utc_sunset is None:
             clock_color = colours.RED
         elif utc_sunrise <= now_utc < utc_sunset:
             clock_color = DAY_COLOUR
